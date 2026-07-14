@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment files - NEVER commit real tokens
+.env
+.env.local
+.env.*.local
+
+# Downloaded GTFS data
+data/gtfs/*.zip
+data/gtfs/*.part
+
+# Test output
+data/test-gtfs/
+
+# Logs
+*.log
+npm-debug.log*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Coverage
+coverage/
