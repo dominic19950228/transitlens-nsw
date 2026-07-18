@@ -13,6 +13,9 @@ dist/
 data/gtfs/*.zip
 data/gtfs/*.part
 
+# Extracted GTFS files
+data/gtfs/extracted/
+
 # Test output
 data/test-gtfs/
 

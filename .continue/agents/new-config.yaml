@@ -1,0 +1,19 @@
+# This is an example configuration file
+# To learn more, see the full config.yaml reference: https://docs.continue.dev/reference
+
+name: ai.local
+version: 1.0.0
+schema: v1
+
+# Define which models can be used
+# https://docs.continue.dev/customization/models
+models:
+  - name: iPhone-Qwen-Local
+    provider: ollama
+    model: qwen2.5-7b-instruct-4bit
+    apiBase: http://192.168.1.240:11434
+    roles:
+      - chat
+      - edit
+      - apply
+
