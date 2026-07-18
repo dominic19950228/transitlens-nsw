@@ -6,7 +6,6 @@ export {
   extractGtfs,
   type ExtractGtfsOptions,
   type ExtractGtfsResult,
-  type GtfsFileName,
 } from "./extractGtfs.js";
 
 export {
@@ -15,10 +14,15 @@ export {
   NotZipFileError,
   EmptyZipError,
   ExtractionFailedError,
-  AtomicRenameError,
   MissingRequiredFileError,
   InvalidGtfsStructureError,
   ZipTooManyFilesError,
   ZipFileTooLargeError,
   ZipTotalTooLargeError,
+  UnsafePathError,
+  SymlinkNotAllowedError,
+  DuplicateFileError,
+  ExtractionConflictError,
 } from "./extractGtfs.js";
+
+export { isPathSafe } from "./pathSafety.js";

@@ -10,8 +10,16 @@ import { join, extname } from "node:path";
 import { downloadGtfs } from "./download/downloadGtfs.js";
 import { extractGtfs } from "./extract/extractGtfs.js";
 import {
-  loadEnv,
-  EnvValidationError,
+  validateDownloadEnv,
+  validateExtractionEnv,
+  GTFS_DOWNLOAD_DIR,
+  GTFS_EXTRACTION_DIR,
+  TFNSW_API_TOKEN,
+  TFNSW_GTFS_URL,
+  GTFS_DOWNLOAD_TIMEOUT_MS,
+  GTFS_MAX_ARCHIVE_ENTRIES,
+  GTFS_MAX_SINGLE_FILE_BYTES,
+  GTFS_MAX_TOTAL_UNCOMPRESSED_BYTES,
 } from "./config/env.js";
 import {
   MissingTokenError,
@@ -29,16 +37,15 @@ import {
   AtomicRenameError as DownloadAtomicRenameError,
 } from "./download/downloadGtfs.js";
 import {
-  ZipFileNotFoundError as ExtractZipNotFoundError,
-  NotZipFileError as ExtractNotZipError,
-  EmptyZipError as ExtractEmptyZipError,
-  ExtractionFailedError,
+  ExtractorError,
+  ExtractionConflictError,
   MissingRequiredFileError,
   InvalidGtfsStructureError,
   ZipTooManyFilesError,
   ZipFileTooLargeError,
   ZipTotalTooLargeError,
-  AtomicRenameError as ExtractAtomicRenameError,
+  UnsafePathError,
+  DuplicateFileError,
 } from "./extract/extractGtfs.js";
 
 // Load .env file if present
@@ -68,14 +75,15 @@ function formatDownloadOutput(result: Awaited<ReturnType<typeof downloadGtfs>>):
   return lines.join("\n");
 }
 
-function formatExtractOutput(result: Awaited<ReturnType<typeof extractGtfs>>): string {
+function formatExtractOutput(
+  result: Awaited<ReturnType<typeof extractGtfs>>,
+  sourceZipPath: string
+): string {
   const lines = [
     "GTFS extraction completed",
-    `Source ZIP: ${result.zipFilePath}`,
-    `Extracted to: ${result.extractedPath}`,
-    `Files extracted: ${result.extractedFiles.length}`,
-    `Total uncompressed size: ${formatBytes(result.totalExtractedBytes)}`,
-    `Extracted at: ${result.extractedAt}`,
+    `Source: ${sourceZipPath}`,
+    `Directory: ${result.extractionDirectory}`,
+    `Manifest: ${result.manifestPath}`,
   ];
   return lines.join("\n");
 }
@@ -89,7 +97,8 @@ async function findLatestZipFile(directory: string): Promise<string> {
     const zipFiles: { name: string; mtime: Date }[] = [];
 
     for (const file of files) {
-      if (extname(file).toLowerCase() === ".zip") {
+      // Only consider completed .zip files, ignore .part files
+      if (extname(file).toLowerCase() === ".zip" && !file.endsWith(".part")) {
         const filePath = join(directory, file);
         const stats = await stat(filePath);
         zipFiles.push({ name: filePath, mtime: stats.mtime });
@@ -132,7 +141,7 @@ function formatError(err: Error): string {
     return "Error: Received empty response from server.";
   }
   if (err instanceof ContentTypeError) {
-    return `Error: Unexpected content type from server.`;
+    return "Error: Unexpected content type from server.";
   }
   if (err instanceof NotZipFileError) {
     return "Error: Server response is not a valid ZIP file.";
@@ -150,16 +159,16 @@ function formatError(err: Error): string {
     return "Error: Invalid URL configuration.";
   }
   // Extraction-specific errors
-  if (err instanceof ExtractZipNotFoundError) {
-    return "Error: ZIP file not found. Please check the file path.";
-  }
-  if (err instanceof ExtractNotZipError) {
-    return "Error: File is not a valid ZIP archive.";
-  }
-  if (err instanceof ExtractEmptyZipError) {
-    return "Error: ZIP file is empty.";
-  }
-  if (err instanceof ExtractionFailedError) {
+  if (err instanceof ExtractorError) {
+    if (err instanceof UnsafePathError) {
+      return `Error: Unsafe path detected in archive: ${err.message}`;
+    }
+    if (err instanceof DuplicateFileError) {
+      return `Error: Duplicate filename detected in archive: ${err.message}`;
+    }
+    if (err instanceof ExtractionConflictError) {
+      return `Error: Extraction conflict. ${err.message}`;
+    }
     return `Error: Extraction failed. ${err.message}`;
   }
   if (err instanceof MissingRequiredFileError) {
@@ -169,19 +178,13 @@ function formatError(err: Error): string {
     return `Error: Invalid GTFS structure. ${err.message}`;
   }
   if (err instanceof ZipTooManyFilesError) {
-    return `Error: ZIP contains too many files (${err.count}), limit is ${err.limit}.`;
+    return `Error: ZIP contains ${err.count} files, limit is ${err.limit}.`;
   }
   if (err instanceof ZipFileTooLargeError) {
-    return `Error: File ${err.fileName} in ZIP is too large (${formatBytes(err.sizeBytes)}), limit is ${formatBytes(err.limitBytes)}.`;
+    return `Error: File ${err.fileName} is ${formatBytes(err.sizeBytes)}, limit is ${formatBytes(err.limitBytes)}.`;
   }
   if (err instanceof ZipTotalTooLargeError) {
-    return `Error: Total uncompressed size (${formatBytes(err.totalBytes)}) exceeds limit (${formatBytes(err.limitBytes)}).`;
-  }
-  if (err instanceof ExtractAtomicRenameError) {
-    return "Error: Failed to finalize extraction. Please check disk permissions.";
-  }
-  if (err instanceof EnvValidationError) {
-    return `Error: Environment configuration error: ${err.message}`;
+    return `Error: Total uncompressed size is ${formatBytes(err.totalBytes)}, limit is ${formatBytes(err.limitBytes)}.`;
   }
   if (err instanceof HttpError) {
     return `Error: HTTP error ${err.status} ${err.statusText}.`;
@@ -191,13 +194,15 @@ function formatError(err: Error): string {
   return `Error: ${err.message}`;
 }
 
-async function handleDownload(env: ReturnType<typeof loadEnv>): Promise<CliResult> {
+async function handleDownload(): Promise<CliResult> {
   try {
+    validateDownloadEnv();
+
     const result = await downloadGtfs({
-      url: env.gtfsUrl,
-      apiToken: env.apiToken,
-      outputDirectory: env.downloadDir,
-      timeoutMs: env.timeoutMs,
+      url: TFNSW_GTFS_URL,
+      apiToken: TFNSW_API_TOKEN!,
+      outputDirectory: GTFS_DOWNLOAD_DIR,
+      timeoutMs: GTFS_DOWNLOAD_TIMEOUT_MS,
     });
 
     return {
@@ -215,25 +220,22 @@ async function handleDownload(env: ReturnType<typeof loadEnv>): Promise<CliResul
   }
 }
 
-async function handleExtract(
-  zipFilePath: string,
-  env: ReturnType<typeof loadEnv>
-): Promise<CliResult> {
+async function handleExtract(zipFilePath: string): Promise<CliResult> {
   try {
+    validateExtractionEnv();
+
     const result = await extractGtfs({
       zipFilePath,
-      outputDirectory: env.extractionDir,
-      validateRequired: true,
-      cleanOnFailure: true,
-      maxFiles: env.maxArchiveFiles,
-      maxSingleFileBytes: env.maxSingleFileBytes,
-      maxTotalBytes: env.maxTotalUncompressedBytes,
+      outputDirectory: GTFS_EXTRACTION_DIR,
+      maxEntries: GTFS_MAX_ARCHIVE_ENTRIES,
+      maxSingleFileBytes: GTFS_MAX_SINGLE_FILE_BYTES,
+      maxTotalBytes: GTFS_MAX_TOTAL_UNCOMPRESSED_BYTES,
     });
 
     return {
       success: true,
       exitCode: 0,
-      message: formatExtractOutput(result),
+      message: formatExtractOutput(result, zipFilePath),
     };
   } catch (err) {
     const errorMessage = err instanceof Error ? formatError(err) : "An unexpected error occurred.";
@@ -245,18 +247,19 @@ async function handleExtract(
   }
 }
 
-async function handleExtractLatest(env: ReturnType<typeof loadEnv>): Promise<CliResult> {
+async function handleExtractLatest(): Promise<CliResult> {
   try {
-    const latestZip = await findLatestZipFile(env.downloadDir);
-    return await handleExtract(latestZip, env);
+    validateExtractionEnv();
+
+    const latestZip = await findLatestZipFile(GTFS_DOWNLOAD_DIR);
+    return await handleExtract(latestZip);
   } catch (err) {
     const errorMessage = err instanceof Error ? formatError(err) : "An unexpected error occurred.";
-    // Check if it's the "no zip files" error, give a nicer message
     if (err instanceof Error && err.message.startsWith("No .zip files")) {
       return {
         success: false,
         exitCode: 1,
-        message: `Error: No downloaded GTFS ZIP found in ${env.downloadDir}. Run 'npm run gtfs:download' first.`,
+        message: `Error: No downloaded GTFS ZIP found in ${GTFS_DOWNLOAD_DIR}. Run 'npm run gtfs:download' first.`,
       };
     }
     return {
@@ -274,38 +277,27 @@ function getCommand(): CliCommand {
   if (arg === "extract-latest") return "extract-latest";
 
   console.error(`Unknown command: ${arg}`);
-  console.error("Usage:");
-  console.error("  npx tsx src/cli.ts              - Download GTFS (default)");
-  console.error("  npx tsx src/cli.ts download      - Download GTFS");
-  console.error("  npx tsx src/cli.ts extract <file> - Extract a specific ZIP");
-  console.error("  npx tsx src/cli.ts extract-latest - Extract most recent ZIP in download directory");
   process.exit(1);
 }
 
 async function main(): Promise<CliResult> {
   try {
-    // Load and validate environment
-    const env = loadEnv();
     const command = getCommand();
 
     switch (command) {
       case "download":
-        return await handleDownload(env);
+        return await handleDownload();
 
       case "extract": {
         const zipArg = process.argv[3];
         if (!zipArg) {
-          return {
-            success: false,
-            exitCode: 1,
-            message: "Error: Please specify the ZIP file to extract.\nUsage: npx tsx src/cli.ts extract <path-to-zip>",
-          };
+          return { success: false, exitCode: 1, message: "Error: Please specify the ZIP file." };
         }
-        return await handleExtract(zipArg, env);
+        return await handleExtract(zipArg);
       }
 
       case "extract-latest":
-        return await handleExtractLatest(env);
+        return await handleExtractLatest();
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? formatError(err) : "An unexpected error occurred.";
@@ -317,7 +309,6 @@ async function main(): Promise<CliResult> {
   }
 }
 
-// Run CLI
 const result = await main();
 console.log(result.message);
 process.exit(result.exitCode);

@@ -1,1 +1,35 @@
-{"name":"nsw-transit-platform","version":"1.0.0","description":"NSW Transit Platform - TfNSW GTFS Data Processing","type":"module","scripts":{"typecheck":"tsc --noEmit","test":"vitest run","test:watch":"vitest","gtfs:download":"tsx src/cli.ts","gtfs:extract":"tsx src/cli.ts extract","gtfs:extract:latest":"tsx src/cli.ts extract-latest"},"keywords":["gtfs","transport","nsw","tfnsw"],"author":"","license":"ISC","dependencies":{"dotenv":"^16.4.5","unzipper":"^0.12.5"},"devDependencies":{"@types/node":"^20.14.0","@types/unzipper":"^0.10.11","tsx":"^4.15.0","typescript":"^5.5.0","vitest":"^2.0.0"}}
+{
+  "name": "nsw-transit-platform",
+  "version": "1.0.0",
+  "description": "NSW Transit Platform - TfNSW GTFS Data Processing",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "gtfs:download": "tsx src/cli.ts",
+    "gtfs:extract": "tsx src/cli.ts extract",
+    "gtfs:extract:latest": "tsx src/cli.ts extract-latest"
+  },
+  "keywords": [
+    "gtfs",
+    "transport",
+    "nsw",
+    "tfnsw"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "unzipper": "^0.12.5"
+  },
+  "devDependencies": {
+    "@types/archiver": "^8.0.0",
+    "@types/node": "^20.14.0",
+    "@types/unzipper": "^0.10.11",
+    "archiver": "^8.0.0",
+    "tsx": "^4.15.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

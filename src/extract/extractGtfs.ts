@@ -1,66 +1,29 @@
-/**
- * GTFS Extractor - Step 2 of NSW Transit Platform
- * Extracts TfNSW Complete GTFS ZIP file using streaming (unzipper).
- */
-
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, rm, stat } from "node:fs/promises";
+import { mkdir, rm, stat, rename, readFile, writeFile, access } from "node:fs/promises";
 import { join, basename } from "node:path";
-import * as unzipper from "unzipper";
+import { pipeline } from "node:stream/promises";
+import { createHash } from "node:crypto";
+import { Transform, type TransformCallback } from "node:stream";
+import unzipper from "unzipper";
+import { isPathSafe } from "./pathSafety.js";
 
-// Required GTFS text files
-const REQUIRED_GTFS_FILES = [
-  "agency.txt",
-  "stops.txt",
-  "routes.txt",
-  "trips.txt",
-  "stop_times.txt",
-] as const;
-
-// GTFS files that define service availability (one of these is required)
-const SERVICE_FILES = ["calendar.txt", "calendar_dates.txt"] as const;
-
-// Optional GTFS files
-const OPTIONAL_GTFS_FILES = [
-  "feed_info.txt",
-  "shapes.txt",
-  "frequencies.txt",
-  "transfers.txt",
-  "pathways.txt",
-  "levels.txt",
-  "translations.txt",
-] as const;
-
-// All recognized GTFS files
-const ALL_GTFS_FILES = [
-  ...REQUIRED_GTFS_FILES,
-  ...SERVICE_FILES,
-  ...OPTIONAL_GTFS_FILES,
-] as const;
-
-export type GtfsFileName = (typeof ALL_GTFS_FILES)[number];
+const REQUIRED_GTFS = ["agency.txt", "stops.txt", "routes.txt", "trips.txt", "stop_times.txt"] as const;
+const SERVICE_GTFS = ["calendar.txt", "calendar_dates.txt"] as const;
 
 export interface ExtractGtfsOptions {
   zipFilePath: string;
   outputDirectory: string;
-  validateRequired?: boolean;
-  cleanOnFailure?: boolean;
-  maxFiles?: number;
+  maxEntries?: number;
   maxSingleFileBytes?: number;
   maxTotalBytes?: number;
 }
 
 export interface ExtractGtfsResult {
-  extractedPath: string;
-  extractedFiles: string[];
-  extractedAt: string;
-  zipFilePath: string;
-  zipFileSize: number;
-  totalExtractedBytes: number;
+  extractionDirectory: string;
+  manifestPath: string;
 }
 
 // Custom error classes
-
 export class ExtractorError extends Error {
   constructor(message: string) {
     super(message);
@@ -93,13 +56,6 @@ export class ExtractionFailedError extends ExtractorError {
   constructor(cause: string) {
     super(`Extraction failed: ${cause}`);
     this.name = "ExtractionFailedError";
-  }
-}
-
-export class AtomicRenameError extends ExtractorError {
-  constructor(cause: string) {
-    super(`Failed to finalize extraction: ${cause}`);
-    this.name = "AtomicRenameError";
   }
 }
 
@@ -158,6 +114,43 @@ export class ZipTotalTooLargeError extends ExtractorError {
   }
 }
 
+export class UnsafePathError extends ExtractorError {
+  constructor(path: string) {
+    super(`Unsafe archive path detected: ${path}`);
+    this.name = "UnsafePathError";
+  }
+}
+
+export class SymlinkNotAllowedError extends ExtractorError {
+  constructor(path: string) {
+    super(`Symbolic links are not allowed: ${path}`);
+    this.name = "SymlinkNotAllowedError";
+  }
+}
+
+export class DuplicateFileError extends ExtractorError {
+  constructor(fileName: string) {
+    super(`Duplicate normalized filename detected: ${fileName}`);
+    this.name = "DuplicateFileError";
+  }
+}
+
+export class ExtractionConflictError extends ExtractorError {
+  existingDir: string;
+
+  constructor(existingDir: string, message: string) {
+    super(message);
+    this.name = "ExtractionConflictError";
+    this.existingDir = existingDir;
+  }
+}
+
+// Generate unique temporary directory name using timestamp
+function generateTempDirName(baseDir: string, zipBasename: string): string {
+  const timestamp = Date.now();
+  return join(baseDir, `${zipBasename}.part.${timestamp}`);
+}
+
 /**
  * Validate that the ZIP file exists and is readable.
  */
@@ -180,16 +173,7 @@ async function validateZipFile(zipFilePath: string): Promise<number> {
 }
 
 /**
- * Validate output directory path.
- */
-function validateOutputDirectory(outputDir: string): void {
-  if (!outputDir || outputDir.trim() === "") {
-    throw new ExtractionFailedError("Output directory cannot be empty");
-  }
-}
-
-/**
- * Get timestamp in ISO format.
+ * Get timestamp in ISO format (UTC).
  */
 function getTimestamp(): string {
   return new Date().toISOString();
@@ -198,41 +182,89 @@ function getTimestamp(): string {
 /**
  * Validate that extracted files contain required GTFS files.
  */
-function validateGtfsStructure(extractedFiles: string[]): string[] {
+function validateGtfsStructure(
+  extractedFiles: Set<string>,
+  hasCalendar: boolean,
+  hasCalendarDates: boolean
+): string[] {
   const missingFiles: string[] = [];
-  const extractedLower = extractedFiles.map((f) => f.toLowerCase());
 
-  for (const required of REQUIRED_GTFS_FILES) {
-    if (!extractedLower.includes(required.toLowerCase())) {
+  for (const required of REQUIRED_GTFS) {
+    if (!extractedFiles.has(required.toLowerCase())) {
       missingFiles.push(required);
     }
   }
 
-  const hasServiceFile = SERVICE_FILES.some((serviceFile) =>
-    extractedLower.includes(serviceFile.toLowerCase())
-  );
-
-  if (!hasServiceFile) {
-    missingFiles.push(...SERVICE_FILES);
+  // Require at least one of calendar.txt or calendar_dates.txt
+  if (!hasCalendar && !hasCalendarDates) {
+    missingFiles.push(...SERVICE_GTFS);
   }
 
   return missingFiles;
 }
 
 /**
- * Check if a filename is a recognized GTFS file.
+ * Calculate SHA-256 hash of a file using streaming.
  */
-function isGtfsFile(fileName: string): boolean {
-  const lowerName = fileName.toLowerCase();
-  return ALL_GTFS_FILES.some((gtfsFile) => gtfsFile.toLowerCase() === lowerName);
+async function calculateFileHash(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  await pipeline(createReadStream(path), hash);
+  return hash.digest("hex");
 }
 
 /**
- * Extract GTFS ZIP file to output directory (atomic).
- * Steps:
- * 1. Extract to a temporary subdirectory
- * 2. Validate structure
- * 3. Return result (no rename; caller decides to finalize)
+ * Check if an entry is a recognized GTFS filename.
+ */
+function isRecognizedGtfsFile(fileName: string): boolean {
+  const lower = fileName.toLowerCase();
+  return (
+    REQUIRED_GTFS.includes(lower as typeof REQUIRED_GTFS[number]) ||
+    SERVICE_GTFS.includes(lower as typeof SERVICE_GTFS[number]) ||
+    lower === "feed_info.txt" ||
+    lower === "shapes.txt" ||
+    lower === "frequencies.txt" ||
+    lower === "transfers.txt" ||
+    lower === "pathways.txt" ||
+    lower === "levels.txt" ||
+    lower === "translations.txt" ||
+    lower === "attributions.txt" ||
+    lower === "fare_attributes.txt" ||
+    lower === "fare_rules.txt"
+  );
+}
+
+class HashTransform extends Transform {
+  private hash = createHash("sha256");
+  private byteCount = 0;
+  constructor(private fileName: string, private maxBytes: number) {
+    super();
+  }
+  _transform(chunk: Buffer, _: BufferEncoding, cb: TransformCallback) {
+    this.byteCount += chunk.length;
+    if (this.byteCount > this.maxBytes) {
+      return cb(new ZipFileTooLargeError(this.fileName, this.byteCount, this.maxBytes));
+    }
+    this.hash.update(chunk);
+    cb(null, chunk);
+  }
+  get result() {
+    return { size: this.byteCount, sha256: this.hash.digest("hex") };
+  }
+}
+
+async function extractStreamToFile(
+  entry: unzipper.File,
+  outputPath: string,
+  maxSingleFileBytes: number
+): Promise<{ size: number; sha256: string }> {
+  const hashTransform = new HashTransform(basename(outputPath), maxSingleFileBytes);
+  await pipeline(entry.stream(), hashTransform, createWriteStream(outputPath));
+  return hashTransform.result;
+}
+
+/**
+ * Extract GTFS ZIP file to output directory atomically.
+ * Uses streaming for memory-efficient extraction.
  */
 export async function extractGtfs(
   options: ExtractGtfsOptions
@@ -240,148 +272,204 @@ export async function extractGtfs(
   const {
     zipFilePath,
     outputDirectory,
-    validateRequired = true,
-    cleanOnFailure = true,
-    maxFiles = 100,
-    maxSingleFileBytes = 10 * 1024 * 1024 * 1024, // 10 GiB
-    maxTotalBytes = 20 * 1024 * 1024 * 1024, // 20 GiB
+    maxEntries = 1000,
+    maxSingleFileBytes = 10 * 1024 * 1024 * 1024, // 10GB default
+    maxTotalBytes = 20 * 1024 * 1024 * 1024, // 20GB default
   } = options;
 
   // Validate inputs
   const zipFileSize = await validateZipFile(zipFilePath);
-  validateOutputDirectory(outputDirectory);
+  const zipBasename = basename(zipFilePath, ".zip");
+  const finalDir = join(outputDirectory, zipBasename);
+
+  // Check for existing extraction (idempotency)
+  try {
+    await access(finalDir);
+    // Directory exists - check manifest
+    const manifestPath = join(finalDir, "feed-manifest.json");
+    try {
+      const manifestContent = await readFile(manifestPath, "utf-8");
+      const manifest = JSON.parse(manifestContent);
+      const existingHash = manifest.sourceZip?.sha256;
+      if (existingHash) {
+        const currentHash = await calculateFileHash(zipFilePath);
+        if (existingHash === currentHash) {
+          // Same source - return existing extraction
+          return {
+            extractionDirectory: finalDir,
+            manifestPath,
+          };
+        }
+      }
+      // Different source or missing hash - conflict
+      throw new ExtractionConflictError(
+        finalDir,
+        `Extraction directory already exists with different source: ${finalDir}`
+      );
+    } catch (err) {
+      if (err instanceof ExtractionConflictError) {
+        throw err;
+      }
+      // Invalid manifest - conflict
+      throw new ExtractionConflictError(
+        finalDir,
+        `Existing extraction directory has invalid manifest: ${finalDir}`
+      );
+    }
+  } catch (err) {
+    if (err instanceof ExtractionConflictError) {
+      throw err;
+    }
+    // Directory doesn't exist - proceed with extraction
+  }
 
   // Ensure output directory exists
   await mkdir(outputDirectory, { recursive: true });
 
-  const extractedAt = getTimestamp();
-
-  // Create temporary extraction directory with a unique name
-  const timestampForDir = `${new Date().toISOString().replace(/[:.]/g, '-')}`;
-  const tempDirName = `extraction-${timestampForDir}`;
-  const tempDirPath = join(outputDirectory, tempDirName);
+  // Create unique temporary extraction directory
+  const tempDirPath = generateTempDirName(outputDirectory, zipBasename);
   let tempDirExists = false;
 
-  const extractedFiles: string[] = [];
+  const extractedFiles = new Set<string>();
+  const fileHashes: Record<string, { size: number; sha256: string }> = {};
   let totalExtractedBytes = 0;
-  let fileCount = 0;
+  let entryCount = 0;
+  let hasCalendar = false;
+  let hasCalendarDates = false;
+  const normalizedNames = new Set<string>();
 
   try {
     await mkdir(tempDirPath, { recursive: true });
     tempDirExists = true;
 
-    // Use unzipper.Parse() for streaming extraction
-    await new Promise<void>((resolve, reject) => {
-      const readStream = createReadStream(zipFilePath);
-      const parseStream = unzipper.Parse();
+    // Open ZIP file using unzipper
+    const directory = await unzipper.Open.file(zipFilePath);
 
-      readStream.on("error", (err: Error) => {
-        reject(new ExtractionFailedError(`Failed to read ZIP: ${err.message}`));
-      });
+    for (const entry of directory.files) {
+      // Skip directories
+      if (entry.type === "Directory") {
+        continue;
+      }
 
-      parseStream.on("error", (err: Error) => {
-        reject(new ExtractionFailedError(`Failed to parse ZIP: ${err.message}`));
-      });
+      entryCount++;
+      if (entryCount > maxEntries) {
+        throw new ZipTooManyFilesError(maxEntries, entryCount);
+      }
 
-      parseStream.on("close", () => {
-        resolve();
-      });
+      // Get the final path component only (basename)
+      const entryBasename = basename(entry.path);
+      const entryPath = entry.path;
 
-      parseStream.on("entry", (entry: unzipper.Entry) => {
-        const fileName = basename(entry.path);
+      // Validate path safety - throw on unsafe paths (not skip)
+      if (!isPathSafe(entryPath)) {
+        throw new UnsafePathError(entryPath);
+      }
 
-        // Skip non-GTFS files and directories
-        if (!isGtfsFile(fileName) || entry.type === "Directory") {
-          entry.autodrain();
-          return;
+      // Normalize to lowercase for GTFS files
+      const normalizedName = entryBasename.toLowerCase();
+
+      // Only extract recognized GTFS filenames
+      if (!isRecognizedGtfsFile(normalizedName)) {
+        // Not a GTFS file we care about, skip it (but still count toward limit)
+        continue;
+      }
+
+      // Check for duplicate normalized filenames using Set
+      if (normalizedNames.has(normalizedName)) {
+        throw new DuplicateFileError(normalizedName);
+      }
+      normalizedNames.add(normalizedName);
+
+      // Track service calendar files
+      if (normalizedName === "calendar.txt") hasCalendar = true;
+      if (normalizedName === "calendar_dates.txt") hasCalendarDates = true;
+
+      const outputPath = join(tempDirPath, normalizedName);
+
+      // Extract using streaming with size tracking
+      try {
+        const result = await extractStreamToFile(entry, outputPath, maxSingleFileBytes);
+
+        totalExtractedBytes += result.size;
+        if (totalExtractedBytes > maxTotalBytes) {
+          // Clean up the file we just wrote
+          await rm(outputPath, { force: true });
+          throw new ZipTotalTooLargeError(totalExtractedBytes, maxTotalBytes);
         }
 
-        // Enforce file count limit
-        fileCount++;
-        if (fileCount > maxFiles) {
-          entry.autodrain();
-          // Don't reject outright; track and handle at end
-          return;
+        extractedFiles.add(normalizedName);
+        fileHashes[normalizedName] = result;
+      } catch (err) {
+        if (
+          err instanceof ZipFileTooLargeError ||
+          err instanceof ZipTotalTooLargeError ||
+          err instanceof ExtractionFailedError
+        ) {
+          throw err;
         }
-
-        // Check individual file size
-        const fileSize = entry.vars.compressedSize || 0;
-        if (fileSize > maxSingleFileBytes) {
-          entry.autodrain();
-          reject(new ZipFileTooLargeError(fileName, fileSize, maxSingleFileBytes));
-          return;
-        }
-
-        const destPath = join(tempDirPath, fileName);
-        const writeStream = createWriteStream(destPath);
-
-        writeStream.on("error", (err) => {
-          reject(new ExtractionFailedError(`Failed to write ${fileName}: ${err.message}`));
-        });
-
-        entry.pipe(writeStream);
-
-        entry.on("end", () => {
-          extractedFiles.push(fileName);
-          totalExtractedBytes += fileSize;
-        });
-      });
-
-      readStream.pipe(parseStream);
-    });
-
-    // After streaming, check file count limit
-    if (fileCount > maxFiles) {
-      throw new ZipTooManyFilesError(maxFiles, fileCount);
-    }
-
-    // Check total size limit
-    if (totalExtractedBytes > maxTotalBytes) {
-      throw new ZipTotalTooLargeError(totalExtractedBytes, maxTotalBytes);
-    }
-
-    if (extractedFiles.length === 0) {
-      throw new EmptyZipError();
-    }
-
-    // Validate GTFS structure if requested
-    if (validateRequired) {
-      const missingFiles = validateGtfsStructure(extractedFiles);
-      if (missingFiles.length > 0) {
-        throw new MissingRequiredFileError(missingFiles);
+        // Clean up partial file
+        try {
+          await rm(outputPath, { force: true });
+        } catch { /* ignore */ }
+        throw new ExtractionFailedError(
+          `Failed to extract ${normalizedName}: ${err instanceof Error ? err.message : String(err)}`
+        );
       }
     }
 
-    // Optional ZIP signature check (quick validation)
-    // unzipper already validated, but we do a simple check
-    const headerBuffer = Buffer.alloc(4);
-    const { open } = await import("node:fs/promises");
-    const headerFd = await open(zipFilePath, "r");
-    try {
-      await headerFd.read(headerBuffer, 0, 4, 0);
-      if (headerBuffer[0] !== 0x50 || headerBuffer[1] !== 0x4b) {
-        throw new NotZipFileError("Invalid ZIP signature");
-      }
-    } finally {
-      await headerFd.close();
+    // Validate GTFS structure
+    const missing = validateGtfsStructure(extractedFiles, hasCalendar, hasCalendarDates);
+    if (missing.length > 0) {
+      throw new MissingRequiredFileError(missing);
     }
+
+    // Calculate source ZIP hash for manifest
+    const sourceHash = await calculateFileHash(zipFilePath);
+
+    // Build manifest with stable ordering
+    const sortedFileNames = Object.keys(fileHashes).sort();
+    const manifest = {
+      schemaVersion: 1,
+      sourceZip: {
+        fileName: basename(zipFilePath),
+        filePath: zipFilePath,
+        sizeBytes: zipFileSize,
+        sha256: sourceHash,
+      },
+      extractedAt: getTimestamp(),
+      extractionDirectory: finalDir,
+      requiredFiles: [...REQUIRED_GTFS].sort(),
+      optionalFiles: sortedFileNames.filter(
+        (f) =>
+          !REQUIRED_GTFS.includes(f as typeof REQUIRED_GTFS[number]) &&
+          !SERVICE_GTFS.includes(f as typeof SERVICE_GTFS[number])
+      ),
+      missingRequiredFiles: [],
+      files: sortedFileNames.map((name) => ({
+        fileName: name,
+        relativePath: name,
+        sizeBytes: fileHashes[name].size,
+        sha256: fileHashes[name].sha256,
+      })),
+      totalFiles: extractedFiles.size,
+      totalUncompressedBytes: totalExtractedBytes,
+    };
+
+    // Write manifest
+    await writeFile(join(tempDirPath, "feed-manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
+
+    // Atomically rename temp directory to final
+    await rename(tempDirPath, finalDir);
+    tempDirExists = false;
 
     return {
-      extractedPath: tempDirPath,
-      extractedFiles: extractedFiles.sort(),
-      extractedAt,
-      zipFilePath,
-      zipFileSize,
-      totalExtractedBytes,
+      extractionDirectory: finalDir,
+      manifestPath: join(finalDir, "feed-manifest.json"),
     };
   } catch (err) {
     // Clean up temp directory on failure
-    if (cleanOnFailure && tempDirExists) {
-      try {
-        await rm(tempDirPath, { recursive: true, force: true });
-      } catch {
-        // Ignore cleanup errors
-      }
+    if (tempDirExists) {
+      await rm(tempDirPath, { recursive: true, force: true }).catch(() => {});
     }
     throw err;
   }
