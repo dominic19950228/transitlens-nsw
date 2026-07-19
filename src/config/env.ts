@@ -9,26 +9,30 @@ const GTFS_MAX_ARCHIVE_ENTRIES = process.env.GTFS_MAX_ARCHIVE_ENTRIES ? Number(p
 const GTFS_MAX_SINGLE_FILE_BYTES = process.env.GTFS_MAX_SINGLE_FILE_BYTES ? Number(process.env.GTFS_MAX_SINGLE_FILE_BYTES) : 10 * 1024 * 1024 * 1024; // 10GB
 const GTFS_MAX_TOTAL_UNCOMPRESSED_BYTES = process.env.GTFS_MAX_TOTAL_UNCOMPRESSED_BYTES ? Number(process.env.GTFS_MAX_TOTAL_UNCOMPRESSED_BYTES) : 20 * 1024 * 1024 * 1024; // 20GB
 
+// Parse-specific environment variables
+const GTFS_PARSE_BATCH_SIZE = process.env.GTFS_PARSE_BATCH_SIZE ? Number(process.env.GTFS_PARSE_BATCH_SIZE) : 10000;
+const GTFS_PARSE_MAX_ISSUES = process.env.GTFS_PARSE_MAX_ISSUES ? Number(process.env.GTFS_PARSE_MAX_ISSUES) : 1000;
+
 /**
  * Validate environment variables for download commands.
  * Throws if TFNSW_API_TOKEN is missing.
  */
 export function validateDownloadEnv(): void {
-  if (!TFNSW_API_TOKEN) {
-    throw new Error("TFNSW_API_TOKEN environment variable is required for download commands");
-  }
+    if (!TFNSW_API_TOKEN) {
+        throw new Error("TFNSW_API_TOKEN environment variable is required for download commands");
+    }
 
-  // Validate timeout is a positive number
-  if (!Number.isFinite(GTFS_DOWNLOAD_TIMEOUT_MS) || GTFS_DOWNLOAD_TIMEOUT_MS <= 0) {
-    throw new Error("GTFS_DOWNLOAD_TIMEOUT_MS must be a positive number");
-  }
+    // Validate timeout is a positive number
+    if (!Number.isFinite(GTFS_DOWNLOAD_TIMEOUT_MS) || GTFS_DOWNLOAD_TIMEOUT_MS <= 0) {
+        throw new Error("GTFS_DOWNLOAD_TIMEOUT_MS must be a positive number");
+    }
 
-  // Validate URL is a valid URL
-  try {
-    new URL(TFNSW_GTFS_URL);
-  } catch {
-    throw new Error("TFNSW_GTFS_URL must be a valid URL");
-  }
+    // Validate URL is a valid URL
+    try {
+        new URL(TFNSW_GTFS_URL);
+    } catch {
+        throw new Error("TFNSW_GTFS_URL must be a valid URL");
+    }
 }
 
 /**
@@ -36,18 +40,43 @@ export function validateDownloadEnv(): void {
  * Does not require TFNSW_API_TOKEN.
  */
 export function validateExtractionEnv(): void {
-  // Validate numeric limits are positive numbers
-  if (!Number.isFinite(GTFS_MAX_ARCHIVE_ENTRIES) || GTFS_MAX_ARCHIVE_ENTRIES <= 0) {
-    throw new Error("GTFS_MAX_ARCHIVE_ENTRIES must be a positive integer");
-  }
+    // Validate numeric limits are positive numbers
+    if (!Number.isFinite(GTFS_MAX_ARCHIVE_ENTRIES) || GTFS_MAX_ARCHIVE_ENTRIES <= 0) {
+        throw new Error("GTFS_MAX_ARCHIVE_ENTRIES must be a positive integer");
+    }
 
-  if (!Number.isFinite(GTFS_MAX_SINGLE_FILE_BYTES) || GTFS_MAX_SINGLE_FILE_BYTES <= 0) {
-    throw new Error("GTFS_MAX_SINGLE_FILE_BYTES must be a positive integer");
-  }
+    if (!Number.isFinite(GTFS_MAX_SINGLE_FILE_BYTES) || GTFS_MAX_SINGLE_FILE_BYTES <= 0) {
+        throw new Error("GTFS_MAX_SINGLE_FILE_BYTES must be a positive integer");
+    }
 
-  if (!Number.isFinite(GTFS_MAX_TOTAL_UNCOMPRESSED_BYTES) || GTFS_MAX_TOTAL_UNCOMPRESSED_BYTES <= 0) {
-    throw new Error("GTFS_MAX_TOTAL_UNCOMPRESSED_BYTES must be a positive integer");
-  }
+    if (!Number.isFinite(GTFS_MAX_TOTAL_UNCOMPRESSED_BYTES) || GTFS_MAX_TOTAL_UNCOMPRESSED_BYTES <= 0) {
+        throw new Error("GTFS_MAX_TOTAL_UNCOMPRESSED_BYTES must be a positive integer");
+    }
 }
 
-export { GTFS_DOWNLOAD_DIR, GTFS_EXTRACTION_DIR, TFNSW_API_TOKEN, TFNSW_GTFS_URL, GTFS_DOWNLOAD_TIMEOUT_MS, GTFS_MAX_ARCHIVE_ENTRIES, GTFS_MAX_SINGLE_FILE_BYTES, GTFS_MAX_TOTAL_UNCOMPRESSED_BYTES };
+/**
+ * Validate environment variables for parse commands.
+ * Does not require TFNSW_API_TOKEN.
+ */
+export function validateParseEnv(): void {
+    if (!Number.isFinite(GTFS_PARSE_BATCH_SIZE) || GTFS_PARSE_BATCH_SIZE <= 0) {
+        throw new Error("GTFS_PARSE_BATCH_SIZE must be a positive integer");
+    }
+
+    if (!Number.isFinite(GTFS_PARSE_MAX_ISSUES) || GTFS_PARSE_MAX_ISSUES <= 0) {
+        throw new Error("GTFS_PARSE_MAX_ISSUES must be a positive integer");
+    }
+}
+
+export {
+    GTFS_DOWNLOAD_DIR,
+    GTFS_EXTRACTION_DIR,
+    TFNSW_API_TOKEN,
+    TFNSW_GTFS_URL,
+    GTFS_DOWNLOAD_TIMEOUT_MS,
+    GTFS_MAX_ARCHIVE_ENTRIES,
+    GTFS_MAX_SINGLE_FILE_BYTES,
+    GTFS_MAX_TOTAL_UNCOMPRESSED_BYTES,
+    GTFS_PARSE_BATCH_SIZE,
+    GTFS_PARSE_MAX_ISSUES,
+};

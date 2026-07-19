@@ -9,7 +9,9 @@
     "test:watch": "vitest",
     "gtfs:download": "tsx src/cli.ts",
     "gtfs:extract": "tsx src/cli.ts extract",
-    "gtfs:extract:latest": "tsx src/cli.ts extract-latest"
+    "gtfs:extract:latest": "tsx src/cli.ts extract-latest",
+    "gtfs:parse": "tsx src/cli.ts parse",
+    "gtfs:parse:latest": "tsx src/cli.ts parse-latest"
   },
   "keywords": [
     "gtfs",
@@ -20,6 +22,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "csv-parse": "^7.0.1",
     "dotenv": "^16.4.5",
     "unzipper": "^0.12.5"
   },
