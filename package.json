@@ -11,7 +11,8 @@
     "gtfs:extract": "tsx src/cli.ts extract",
     "gtfs:extract:latest": "tsx src/cli.ts extract-latest",
     "gtfs:parse": "tsx src/cli.ts parse",
-    "gtfs:parse:latest": "tsx src/cli.ts parse-latest"
+    "gtfs:parse:latest": "tsx src/cli.ts parse-latest",
+    "db:migrate": "tsx src/cli.ts db-migrate"
   },
   "keywords": [
     "gtfs",
@@ -24,6 +25,7 @@
   "dependencies": {
     "csv-parse": "^7.0.1",
     "dotenv": "^16.4.5",
+    "mysql2": "^3.23.0",
     "unzipper": "^0.12.5"
   },
   "devDependencies": {

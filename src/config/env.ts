@@ -80,3 +80,29 @@ export {
     GTFS_PARSE_BATCH_SIZE,
     GTFS_PARSE_MAX_ISSUES,
 };
+
+export interface DatabaseConfig {
+    host: string;
+    port: number;
+    user: string;
+    password: string;
+    database: string;
+    connectionLimit: number;
+}
+
+export function getDatabaseConfig(): DatabaseConfig {
+    const host = process.env.DB_HOST;
+    const port = Number(process.env.DB_PORT);
+    const user = process.env.DB_USER;
+    const password = process.env.DB_PASSWORD || "";
+    const database = process.env.DB_NAME;
+    const connectionLimit = Number(process.env.DB_CONNECTION_LIMIT);
+
+    if (!host) throw new Error("DB_HOST must not be empty");
+    if (!Number.isInteger(port) || port <= 0) throw new Error("DB_PORT must be a positive integer");
+    if (!user) throw new Error("DB_USER must not be empty");
+    if (!database) throw new Error("DB_NAME must not be empty");
+    if (!Number.isInteger(connectionLimit) || connectionLimit <= 0) throw new Error("DB_CONNECTION_LIMIT must be a positive integer");
+
+    return { host, port, user, password, database, connectionLimit };
+}

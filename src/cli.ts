@@ -3,6 +3,7 @@
  * Step 1: Download
  * Step 2: Extract GTFS ZIP
  * Step 3: Parse and validate extracted GTFS CSV files
+ * Step 4A: Database migration
  */
 
 import { config } from "dotenv";
@@ -11,10 +12,12 @@ import { join, extname } from "node:path";
 import { downloadGtfs } from "./download/downloadGtfs.js";
 import { extractGtfs } from "./extract/extractGtfs.js";
 import { parseGtfs, parseLatestExtraction } from "./parse/index.js";
+import { runMigrations, closeDatabasePool } from "./database/index.js";
 import {
     validateDownloadEnv,
     validateExtractionEnv,
     validateParseEnv,
+    getDatabaseConfig,
     GTFS_DOWNLOAD_DIR,
     GTFS_EXTRACTION_DIR,
     GTFS_PARSE_BATCH_SIZE,
@@ -57,7 +60,7 @@ import {
 config();
 
 // Command name from process.argv
-type CliCommand = "download" | "extract" | "extract-latest" | "parse" | "parse-latest";
+type CliCommand = "download" | "extract" | "extract-latest" | "parse" | "parse-latest" | "db-migrate";
 
 interface CliResult {
     success: boolean;
@@ -126,6 +129,18 @@ function formatParseOutput(
         lines.push(`  Row ${issue.row}: ${issue.message}${fieldInfo}${valueInfo}`);
     }
 
+    return lines.join("\n");
+}
+
+function formatMigrationOutput(result: Awaited<ReturnType<typeof runMigrations>>): string {
+    const lines = [
+        "Database migration completed",
+        `Database: ${getDatabaseConfig().database}`,
+        `Server: ${result.serverVersion}`,
+        `Character set: ${result.charset}`,
+        `Collation: ${result.collation}`,
+        `Tables verified: ${result.tablesVerified}`,
+    ];
     return lines.join("\n");
 }
 
@@ -374,6 +389,32 @@ async function handleParseLatest(): Promise<CliResult> {
     }
 }
 
+async function handleDbMigrate(): Promise<CliResult> {
+    try {
+        // Validate database environment variables
+        getDatabaseConfig();
+
+        // Run migrations
+        const result = await runMigrations();
+
+        return {
+            success: true,
+            exitCode: 0,
+            message: formatMigrationOutput(result),
+        };
+    } catch (err) {
+        const errorMessage = err instanceof Error ? formatError(err) : "An unexpected error occurred.";
+        return {
+            success: false,
+            exitCode: 1,
+            message: errorMessage,
+        };
+    } finally {
+        // Always close the pool
+        await closeDatabasePool();
+    }
+}
+
 function getCommand(): CliCommand {
     const arg = process.argv[2];
     if (!arg || arg === "download") return "download";
@@ -381,6 +422,7 @@ function getCommand(): CliCommand {
     if (arg === "extract-latest") return "extract-latest";
     if (arg === "parse") return "parse";
     if (arg === "parse-latest") return "parse-latest";
+    if (arg === "db-migrate") return "db-migrate";
 
     console.error(`Unknown command: ${arg}`);
     process.exit(1);
@@ -415,6 +457,9 @@ async function main(): Promise<CliResult> {
 
             case "parse-latest":
                 return await handleParseLatest();
+
+            case "db-migrate":
+                return await handleDbMigrate();
         }
     } catch (err) {
         const errorMessage = err instanceof Error ? formatError(err) : "An unexpected error occurred.";

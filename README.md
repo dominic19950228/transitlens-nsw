@@ -7,7 +7,7 @@ The project is being developed incrementally:
 * Step 1: Download the TfNSW Complete GTFS ZIP
 * Step 2: Safely extract and validate the GTFS archive
 * Step 3: Stream and validate GTFS CSV records
-* Step 4: Import validated data into PostgreSQL
+* Step 4: Import validated GTFS data into MariaDB
 * Later: Expose APIs and build a React frontend
 
 ## Technology
@@ -603,4 +603,69 @@ The next stage will:
 
 Step 3 will not persist records.
 
-PostgreSQL import will be implemented separately in Step 4.
+GTFS batch import will be implemented in a later step.
+
+---
+
+# Step 4: Local MariaDB Setup
+
+Step 4A connects the Node.js application to a local XAMPP MariaDB database.
+
+## Requirements
+
+* XAMPP with MySQL/MariaDB running
+* Apache is not required for the Node.js database connection
+
+## Database Setup
+
+1. Start MySQL in XAMPP.
+2. Confirm the `nsw_transit` database exists.
+3. Configure the following environment variables.
+4. Run the migration command.
+
+## Database Environment Variables
+
+```env
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_USER=root
+DB_PASSWORD=
+DB_NAME=nsw_transit
+DB_CONNECTION_LIMIT=5
+```
+
+An empty `DB_PASSWORD` is valid.
+
+## Run Database Migration
+
+```bash
+npm run db:migrate
+```
+
+Expected output:
+
+```text
+Database migration completed
+Database: nsw_transit
+Server: MariaDB 10.4.11
+Character set: utf8mb4
+Collation: utf8mb4_unicode_ci
+Tables verified: 12
+```
+
+## Database Tables
+
+The schema includes these 12 GTFS tables:
+
+* gtfs_feed_imports
+* gtfs_agencies
+* gtfs_stops
+* gtfs_routes
+* gtfs_trips
+* gtfs_stop_times
+* gtfs_calendar
+* gtfs_calendar_dates
+* gtfs_shapes
+* gtfs_feed_info
+* gtfs_frequencies
+* gtfs_transfers
