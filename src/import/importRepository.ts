@@ -20,6 +20,13 @@ export interface CompleteImportParams {
     stats: ImportStats;
 }
 
+export interface MarkImportFailedParams {
+    connection: PoolConnection;
+    importId: number;
+    completedAt: Date;
+    stats: ImportStats;
+}
+
 /**
  * Create a pending import record inside a transaction.
  * Returns the new import ID.
@@ -42,6 +49,10 @@ export async function createPendingImport(
 /**
  * Complete an import by updating its status and stats.
  * Marks as active and sets completed_at.
+ * 
+ * IMPORTANT: Caller must validate success conditions before calling:
+ * - errorCount === 0
+ * - totalAcceptedRows > 0
  */
 export async function completeImport(params: CompleteImportParams): Promise<void> {
     const { connection, importId, completedAt, stats } = params;
@@ -50,6 +61,38 @@ export async function completeImport(params: CompleteImportParams): Promise<void
         `UPDATE gtfs_feed_imports 
          SET status = 'completed',
              is_active = 1,
+             completed_at = ?,
+             total_processed_rows = ?,
+             total_accepted_rows = ?,
+             total_rejected_rows = ?,
+             warning_count = ?,
+             error_count = ?
+         WHERE id = ?`,
+        [
+            completedAt,
+            stats.totalProcessedRows,
+            stats.totalAcceptedRows,
+            stats.totalRejectedRows,
+            stats.warningCount,
+            stats.errorCount,
+            importId,
+        ]
+    );
+}
+
+/**
+ * Mark an import as failed with stats preserved.
+ * Does NOT mark as active.
+ * 
+ * Use this after rollback to record the failed import metadata.
+ */
+export async function markImportFailed(params: MarkImportFailedParams): Promise<void> {
+    const { connection, importId, completedAt, stats } = params;
+
+    await connection.execute<ResultSetHeader>(
+        `UPDATE gtfs_feed_imports 
+         SET status = 'failed',
+             is_active = 0,
              completed_at = ?,
              total_processed_rows = ?,
              total_accepted_rows = ?,

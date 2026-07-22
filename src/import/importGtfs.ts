@@ -12,6 +12,7 @@ import { FILE_TO_TABLE_MAPPING } from "./types.js";
 import {
     createPendingImport,
     completeImport,
+    markImportFailed,
     deactivatePreviousActiveImport,
     readFeedManifest,
     checkGtfsFileExists,
@@ -20,6 +21,7 @@ import {
 
 import { insertBatch } from "./batchInserters.js";
 import { getDatabasePool } from "../database/pool.js";
+import type { PoolConnection } from "mysql2/promise";
 
 // Required GTFS files
 const REQUIRED_FILES: GtfsFileName[] = [
@@ -39,6 +41,21 @@ const CALENDAR_FILES: GtfsFileName[] = [
 const DEFAULT_PARSE_BATCH_SIZE = 10000;
 const DEFAULT_INSERT_BATCH_SIZE = 1000;
 const DEFAULT_MAX_ISSUES = 1000;
+
+/**
+ * Validation error for import failures.
+ */
+export class ImportValidationError extends Error {
+    readonly errorCount: number;
+    readonly acceptedRows: number;
+
+    constructor(message: string, errorCount: number, acceptedRows: number) {
+        super(message);
+        this.name = "ImportValidationError";
+        this.errorCount = errorCount;
+        this.acceptedRows = acceptedRows;
+    }
+}
 
 /**
  * Validate import options.
@@ -87,8 +104,37 @@ async function checkRequiredFiles(directory: string): Promise<void> {
 }
 
 /**
+ * Validate that the import succeeded before marking it complete.
+ * @throws ImportValidationError if validation fails
+ */
+function validateImportSuccess(stats: ImportStats): void {
+    if (stats.errorCount > 0) {
+        throw new ImportValidationError(
+            `Import failed with ${stats.errorCount} error(s)`,
+            stats.errorCount,
+            stats.totalAcceptedRows
+        );
+    }
+
+    if (stats.totalAcceptedRows === 0) {
+        throw new ImportValidationError(
+            "Import failed: no rows were accepted",
+            stats.errorCount,
+            stats.totalAcceptedRows
+        );
+    }
+}
+
+/**
  * Import GTFS feed from an extracted directory.
  * Uses a single transaction for all operations.
+ * 
+ * Success conditions:
+ * - Parser/import finishes without fatal exception
+ * - errorCount === 0
+ * - acceptedRows > 0
+ * - All database inserts succeed
+ * - Transaction commits successfully
  */
 export async function importGtfs(
     options: ImportGtfsOptions
@@ -131,7 +177,9 @@ export async function importGtfs(
     };
 
     let importId: number | null = null;
+    let importCreated = false;
     const startedAt = new Date();
+    const completedAt = new Date();
 
     try {
         // Begin transaction
@@ -144,6 +192,7 @@ export async function importGtfs(
             sourceArchiveSha256: sourceSha256,
             startedAt,
         });
+        importCreated = true;
 
         // Parse GTFS and insert batches
         const parseResult = await parseGtfs({
@@ -178,11 +227,16 @@ export async function importGtfs(
         stats.warningCount = parseResult.warningCount;
         stats.errorCount = parseResult.errorCount;
 
-        // Deactivate previous active imports FIRST
+        // Validate success conditions BEFORE modifying any state
+        // This ensures we don't deactivate the previous feed or mark completion
+        // if the import had errors or no accepted rows
+        validateImportSuccess(stats);
+
+        // Validation passed: proceed with completing the import
+        // 1. Deactivate previous active imports FIRST
         await deactivatePreviousActiveImport(connection, importId);
 
-        // Complete import (marks as completed and active)
-        const completedAt = new Date();
+        // 2. Complete this import (marks as completed and active)
         await completeImport({
             connection,
             importId,
@@ -190,7 +244,7 @@ export async function importGtfs(
             stats,
         });
 
-        // Commit transaction
+        // 3. Commit transaction
         await connection.commit();
 
         // Convert rowsByFile to Record<string, number>
@@ -212,7 +266,7 @@ export async function importGtfs(
             importedRowsByFile,
         };
     } catch (err) {
-        // Rollback transaction
+        // Rollback GTFS data transaction
         let rollbackErr: Error | null = null;
         try {
             await connection.rollback();
@@ -222,7 +276,25 @@ export async function importGtfs(
 
         // If both original error and rollback error exist, wrap in AggregateError
         if (rollbackErr) {
-            throw new AggregateError([err, rollbackErr], "Import failed and rollback also failed");
+            const agg = new AggregateError([err, rollbackErr], "Import failed and rollback also failed");
+            // Still try to record the failed import before throwing
+            try {
+                await recordFailedImport(connection, importId, importCreated, completedAt, stats);
+            } catch {
+                // Ignore recording errors, throw original
+            }
+            throw agg;
+        }
+
+        // Record the failed import metadata if we created the record
+        // Use a separate connection/transaction to update after rollback
+        if (importCreated && importId !== null) {
+            try {
+                await recordFailedImport(connection, importId, importCreated, completedAt, stats);
+            } catch (recordErr) {
+                // Log but don't mask the original error
+                console.error("Failed to record import failure:", recordErr);
+            }
         }
 
         // Re-throw original error
@@ -231,6 +303,29 @@ export async function importGtfs(
         // Always release connection
         connection.release();
     }
+}
+
+/**
+ * Record a failed import after rollback.
+ * Uses the existing connection (which is now in auto-commit mode after rollback).
+ */
+async function recordFailedImport(
+    connection: PoolConnection,
+    importId: number | null,
+    importCreated: boolean,
+    completedAt: Date,
+    stats: ImportStats
+): Promise<void> {
+    if (!importCreated || importId === null) {
+        return;
+    }
+
+    await markImportFailed({
+        connection,
+        importId,
+        completedAt,
+        stats,
+    });
 }
 
 /**

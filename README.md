@@ -669,3 +669,64 @@ The schema includes these 12 GTFS tables:
 * gtfs_feed_info
 * gtfs_frequencies
 * gtfs_transfers
+
+---
+
+# Web Frontend
+
+The `web/` directory contains a Next.js application providing a user interface for browsing imported GTFS data.
+
+## Technology
+
+* Next.js 16 (App Router)
+* TypeScript
+* Server-only database queries via `server-only`
+* MariaDB via `mysql2`
+* Tailwind CSS v4
+
+## Getting Started
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+Then open [http://localhost:3000](http://localhost:3000).
+
+The web application requires the database to be running and populated with GTFS import data.
+
+## Environment Variables
+
+The web app shares the same `.env` file as the main application. Ensure the following database variables are set:
+
+```env
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_USER=root
+DB_PASSWORD=
+DB_NAME=nsw_transit
+```
+
+## Pages
+
+| Path | Description |
+|------|-------------|
+| `/` | Dashboard — shows latest active feed statistics |
+| `/routes` | Paginated route list with search |
+| `/routes/[routeId]` | Route detail with trip list |
+| `/stops` | Paginated stop list with search |
+| `/stops/[stopId]` | Stop detail with stop times |
+| `/imports` | Import history table |
+
+## API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/health` | GET | Database health check |
+| `/api/imports` | GET | All feed imports |
+| `/api/imports/active` | GET | Currently active feed |
+| `/api/routes` | GET | Paginated routes (query: `search`, `limit`, `offset`) |
+| `/api/routes/[routeId]` | GET | Route detail with trips |
+| `/api/stops` | GET | Paginated stops (query: `search`, `limit`, `offset`) |
+| `/api/stops/[stopId]` | GET | Stop detail with stop times |

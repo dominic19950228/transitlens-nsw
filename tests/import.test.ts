@@ -4,8 +4,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { importGtfs } from "../src/import/importGtfs.js";
-import { checkDirectoryExists, checkGtfsFileExists, readFeedManifest, createPendingImport, completeImport, deactivatePreviousActiveImport } from "../src/import/importRepository.js";
+import { importGtfs, ImportValidationError } from "../src/import/importGtfs.js";
+import { checkDirectoryExists, checkGtfsFileExists, readFeedManifest, createPendingImport, completeImport, deactivatePreviousActiveImport, markImportFailed } from "../src/import/importRepository.js";
 import { getDatabasePool } from "../src/database/pool.js";
 import { parseGtfs } from "../src/parse/parseGtfs.js";
 import type { GtfsFileName } from "../src/parse/types.js";
@@ -33,6 +33,7 @@ vi.mock("../src/import/importRepository.js", () => {
         readFeedManifest: vi.fn().mockResolvedValue({ sourceZip: { sha256: "test-sha256" } }),
         createPendingImport: vi.fn().mockResolvedValue(1),
         completeImport: vi.fn().mockResolvedValue(undefined),
+        markImportFailed: vi.fn().mockResolvedValue(undefined),
         deactivatePreviousActiveImport: vi.fn().mockResolvedValue(undefined),
     };
 });
@@ -174,10 +175,10 @@ describe("GTFS Import Unit Tests", () => {
             })
         ).rejects.toThrow("Insert batch size must be a positive integer");
 
-        // Valid positive integer should not throw
+        // Valid positive integer should not throw (need positive accepted rows for validation)
         (parseGtfs as ReturnType<typeof vi.fn>).mockResolvedValue({
-            totalProcessedRows: 0,
-            totalAcceptedRows: 0,
+            totalProcessedRows: 5,
+            totalAcceptedRows: 5,
             totalRejectedRows: 0,
             warningCount: 0,
             errorCount: 0,
@@ -607,14 +608,14 @@ describe("GTFS Import Unit Tests", () => {
         ).rejects.toThrow("Duplicate entry '1-A1' for key 'PRIMARY'");
     });
 
-    // Test 18: statistics are persisted
-    it("18. should persist correct statistics", async () => {
+    // Test 18: statistics are persisted when import succeeds
+    it("18. should persist correct statistics on successful import", async () => {
         (parseGtfs as ReturnType<typeof vi.fn>).mockResolvedValue({
             totalProcessedRows: 1500,
             totalAcceptedRows: 1400,
             totalRejectedRows: 100,
             warningCount: 10,
-            errorCount: 5,
+            errorCount: 0, // Must be 0 for successful import
         });
 
         await importGtfs({
@@ -630,7 +631,7 @@ describe("GTFS Import Unit Tests", () => {
                 totalAcceptedRows: 1400,
                 totalRejectedRows: 100,
                 warningCount: 10,
-                errorCount: 5,
+                errorCount: 0,
             }),
         });
     });
@@ -962,5 +963,310 @@ describe("findLatestExtraction", () => {
 
         const { findLatestExtraction: testFindLatest } = await import("../src/import/findLatestExtraction.js");
         await expect(testFindLatest("/test/base/dir")).rejects.toThrow("No completed extractions found");
+    });
+});
+
+describe("Import Success Validation", () => {
+    let mockConnection: MockConnection;
+
+    beforeEach(() => {
+        vi.clearAllMocks();
+        mockConnection = createMockConnection();
+        const pool = getDatabasePool();
+        (pool.getConnection as ReturnType<typeof vi.fn>).mockResolvedValue(mockConnection);
+
+        // Reset default mock behaviors
+        (checkDirectoryExists as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+        (checkGtfsFileExists as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+        (readFeedManifest as ReturnType<typeof vi.fn>).mockResolvedValue({ sourceZip: { sha256: "test-sha256" } });
+        (createPendingImport as ReturnType<typeof vi.fn>).mockResolvedValue(1);
+        (completeImport as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+        (markImportFailed as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+        (deactivatePreviousActiveImport as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    });
+
+    // Test: zero errors and positive accepted rows completes successfully
+    it("should complete import when zero errors and positive accepted rows", async () => {
+        (parseGtfs as ReturnType<typeof vi.fn>).mockResolvedValue({
+            totalProcessedRows: 100,
+            totalAcceptedRows: 100,
+            totalRejectedRows: 0,
+            warningCount: 5,
+            errorCount: 0,
+        });
+
+        const result = await importGtfs({
+            extractedDirectory: "dummy-dir",
+        });
+
+        expect(result.status).toBe("completed");
+        expect(completeImport).toHaveBeenCalled();
+        expect(deactivatePreviousActiveImport).toHaveBeenCalled();
+        expect(mockConnection.commitCalled).toBe(true);
+        expect(markImportFailed).not.toHaveBeenCalled();
+    });
+
+    // Test: errorCount > 0 produces failed, not completed
+    it("should mark import as failed when errorCount > 0", async () => {
+        (parseGtfs as ReturnType<typeof vi.fn>).mockResolvedValue({
+            totalProcessedRows: 100,
+            totalAcceptedRows: 100,
+            totalRejectedRows: 0,
+            warningCount: 0,
+            errorCount: 3,
+        });
+
+        await expect(
+            importGtfs({
+                extractedDirectory: "dummy-dir",
+            })
+        ).rejects.toThrow(ImportValidationError);
+
+        expect(completeImport).not.toHaveBeenCalled();
+        expect(markImportFailed).toHaveBeenCalled();
+        expect(mockConnection.commitCalled).toBe(false);
+        expect(mockConnection.rollbackCalled).toBe(true);
+    });
+
+    // Test: zero accepted rows produces failed
+    it("should mark import as failed when zero accepted rows", async () => {
+        (parseGtfs as ReturnType<typeof vi.fn>).mockResolvedValue({
+            totalProcessedRows: 100,
+            totalAcceptedRows: 0,
+            totalRejectedRows: 100,
+            warningCount: 0,
+            errorCount: 0,
+        });
+
+        await expect(
+            importGtfs({
+                extractedDirectory: "dummy-dir",
+            })
+        ).rejects.toThrow(ImportValidationError);
+
+        expect(completeImport).not.toHaveBeenCalled();
+        expect(markImportFailed).toHaveBeenCalled();
+        expect(mockConnection.rollbackCalled).toBe(true);
+    });
+
+    // Test: thrown insert error produces failed
+    it("should mark import as failed when insert throws error", async () => {
+        (parseGtfs as ReturnType<typeof vi.fn>).mockImplementation(async (options: { onBatch: (fileName: GtfsFileName, records: readonly unknown[]) => Promise<void> }) => {
+            await options.onBatch("agency.txt", [
+                { agencyId: "A1", agencyName: "Agency 1", agencyUrl: "http://url", agencyTimezone: "Sydney" },
+            ]);
+            return {
+                totalProcessedRows: 1,
+                totalAcceptedRows: 1,
+                totalRejectedRows: 0,
+                warningCount: 0,
+                errorCount: 0,
+            };
+        });
+
+        mockConnection.query = async (sql: string) => {
+            if (sql.includes("INSERT INTO gtfs_agencies")) {
+                throw new Error("Database constraint violation");
+            }
+            if (sql.includes("INSERT INTO gtfs_feed_imports")) {
+                return [{ insertId: 1 }];
+            }
+            return [{ affectedRows: 1 }];
+        };
+
+        await expect(
+            importGtfs({
+                extractedDirectory: "dummy-dir",
+            })
+        ).rejects.toThrow("Database constraint violation");
+
+        expect(completeImport).not.toHaveBeenCalled();
+        expect(markImportFailed).toHaveBeenCalled();
+        expect(mockConnection.rollbackCalled).toBe(true);
+    });
+
+    // Test: failed import rolls back
+    it("should roll back GTFS data when import fails", async () => {
+        (parseGtfs as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("Parser error"));
+
+        await expect(
+            importGtfs({
+                extractedDirectory: "dummy-dir",
+            })
+        ).rejects.toThrow("Parser error");
+
+        expect(mockConnection.rollbackCalled).toBe(true);
+        expect(mockConnection.commitCalled).toBe(false);
+    });
+
+    // Test: failed import does not deactivate existing active feed
+    it("should not call deactivatePreviousActiveImport when import fails", async () => {
+        (parseGtfs as ReturnType<typeof vi.fn>).mockResolvedValue({
+            totalProcessedRows: 100,
+            totalAcceptedRows: 0,
+            totalRejectedRows: 100,
+            warningCount: 0,
+            errorCount: 0,
+        });
+
+        await expect(
+            importGtfs({
+                extractedDirectory: "dummy-dir",
+            })
+        ).rejects.toThrow(ImportValidationError);
+
+        expect(deactivatePreviousActiveImport).not.toHaveBeenCalled();
+    });
+
+    // Test: failed import is never marked active
+    it("should call markImportFailed (not completeImport) when import fails", async () => {
+        (parseGtfs as ReturnType<typeof vi.fn>).mockResolvedValue({
+            totalProcessedRows: 100,
+            totalAcceptedRows: 0,
+            totalRejectedRows: 100,
+            warningCount: 0,
+            errorCount: 0,
+        });
+
+        await expect(
+            importGtfs({
+                extractedDirectory: "dummy-dir",
+            })
+        ).rejects.toThrow(ImportValidationError);
+
+        expect(completeImport).not.toHaveBeenCalled();
+        expect(markImportFailed).toHaveBeenCalledWith(
+            expect.objectContaining({
+                importId: 1,
+            })
+        );
+    });
+
+    // Test: failed import metadata preserves summary counts
+    it("should preserve summary counts when marking import as failed", async () => {
+        (parseGtfs as ReturnType<typeof vi.fn>).mockResolvedValue({
+            totalProcessedRows: 500,
+            totalAcceptedRows: 0,
+            totalRejectedRows: 500,
+            warningCount: 10,
+            errorCount: 3,
+        });
+
+        await expect(
+            importGtfs({
+                extractedDirectory: "dummy-dir",
+            })
+        ).rejects.toThrow(ImportValidationError);
+
+        expect(markImportFailed).toHaveBeenCalledWith(
+            expect.objectContaining({
+                stats: expect.objectContaining({
+                    totalProcessedRows: 500,
+                    totalAcceptedRows: 0,
+                    totalRejectedRows: 500,
+                    warningCount: 10,
+                    errorCount: 3,
+                }),
+            })
+        );
+    });
+
+    // Test: successful operation ordering is insert → deactivate → complete → commit
+    it("should execute operations in correct order: insert data, deactivate, complete, commit", async () => {
+        const callOrder: string[] = [];
+
+        (createPendingImport as ReturnType<typeof vi.fn>).mockImplementation(() => {
+            callOrder.push("createPendingImport");
+            return Promise.resolve(1);
+        });
+
+        (deactivatePreviousActiveImport as ReturnType<typeof vi.fn>).mockImplementation(() => {
+            callOrder.push("deactivatePreviousActiveImport");
+            return Promise.resolve();
+        });
+
+        (completeImport as ReturnType<typeof vi.fn>).mockImplementation(() => {
+            callOrder.push("completeImport");
+            return Promise.resolve();
+        });
+
+        (parseGtfs as ReturnType<typeof vi.fn>).mockImplementation(async (options: { onBatch: (fileName: GtfsFileName, records: readonly unknown[]) => Promise<void> }) => {
+            callOrder.push("parseAndInsert");
+            await options.onBatch("agency.txt", [
+                { agencyId: "A1", agencyName: "Agency 1", agencyUrl: "http://url", agencyTimezone: "Sydney" },
+            ]);
+            return {
+                totalProcessedRows: 1,
+                totalAcceptedRows: 1,
+                totalRejectedRows: 0,
+                warningCount: 0,
+                errorCount: 0,
+            };
+        });
+
+        await importGtfs({
+            extractedDirectory: "dummy-dir",
+        });
+
+        // Expected order: createPendingImport, parseAndInsert, deactivatePreviousActiveImport, completeImport
+        expect(callOrder).toEqual([
+            "createPendingImport",
+            "parseAndInsert",
+            "deactivatePreviousActiveImport",
+            "completeImport",
+        ]);
+        expect(mockConnection.commitCalled).toBe(true);
+    });
+
+    // Test: connection release occurs on both success and failure
+    it("should release connection on success", async () => {
+        (parseGtfs as ReturnType<typeof vi.fn>).mockResolvedValue({
+            totalProcessedRows: 10,
+            totalAcceptedRows: 10,
+            totalRejectedRows: 0,
+            warningCount: 0,
+            errorCount: 0,
+        });
+
+        await importGtfs({
+            extractedDirectory: "dummy-dir",
+        });
+
+        expect(mockConnection.released).toBe(true);
+    });
+
+    it("should release connection on failure", async () => {
+        (parseGtfs as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("Failure"));
+
+        await expect(
+            importGtfs({
+                extractedDirectory: "dummy-dir",
+            })
+        ).rejects.toThrow("Failure");
+
+        expect(mockConnection.released).toBe(true);
+    });
+
+    // Test: ImportValidationError has correct properties
+    it("should throw ImportValidationError with correct properties", async () => {
+        (parseGtfs as ReturnType<typeof vi.fn>).mockResolvedValue({
+            totalProcessedRows: 100,
+            totalAcceptedRows: 0,
+            totalRejectedRows: 100,
+            warningCount: 0,
+            errorCount: 5,
+        });
+
+        try {
+            await importGtfs({
+                extractedDirectory: "dummy-dir",
+            });
+            expect.fail("Should have thrown ImportValidationError");
+        } catch (err) {
+            expect(err).toBeInstanceOf(ImportValidationError);
+            const validationErr = err as ImportValidationError;
+            expect(validationErr.errorCount).toBe(5);
+            expect(validationErr.acceptedRows).toBe(0);
+        }
     });
 });
