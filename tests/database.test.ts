@@ -192,6 +192,7 @@ describe("Database migrations", () => {
         mockReadFileSync = vi.fn();
         mockConnection = {
             query: vi.fn(),
+            execute: vi.fn(),
             release: vi.fn(),
         };
         mockPool = {
@@ -208,18 +209,28 @@ describe("Database migrations", () => {
 
     it("should execute SQL statements sequentially excluding comments", async () => {
         const { runMigrations, REQUIRED_TABLES } = await import("../src/database/migrations.js");
-        mockReadFileSync.mockReturnValue(
-            "-- comment\nCREATE TABLE test1 (id INT);\n-- another\nCREATE TABLE test2 (id INT);"
-        );
+        // First call returns schema.sql with 2 statements
+        mockReadFileSync
+            .mockReturnValueOnce("-- comment\nCREATE TABLE test1 (id INT);\n-- another\nCREATE TABLE test2 (id INT);");
         
+        // Table verification (using pool.query)
         mockPool.query.mockResolvedValueOnce([REQUIRED_TABLES.map(t => ({ TABLE_NAME: t }))]);
         mockPool.query.mockResolvedValueOnce([[{ DEFAULT_CHARACTER_SET_NAME: "utf8mb4", DEFAULT_COLLATION_NAME: "utf8mb4_unicode_ci" }]]);
         mockPool.query.mockResolvedValueOnce([[{ version: "10.4.11" }]]);
+        
+        // Connection queries for schema statements
         mockConnection.query.mockResolvedValue([{}]);
+        // Connection queries for nullable column checks (4 columns x 2 queries each = 8 checks)
+        // Each column: first query = check IS_NULLABLE, second = ALTER if needed
+        // For this test, assume all columns are already nullable (IS_NULLABLE = YES)
+        // Connection queries for nullable column checks (4 columns)
+        // isColumnNullable uses connection.query
+        mockConnection.query.mockResolvedValue([[{ IS_NULLABLE: "YES" }]]);
 
         await runMigrations();
 
-        expect(mockConnection.query).toHaveBeenCalledTimes(2);
+        // Verify schema statements executed via connection.query (2 from schema + 4 from isColumnNullable)
+        expect(mockConnection.query).toHaveBeenCalledTimes(6);
         expect(mockConnection.query).toHaveBeenNthCalledWith(1, "CREATE TABLE test1 (id INT)");
         expect(mockConnection.query).toHaveBeenNthCalledWith(2, "CREATE TABLE test2 (id INT)");
         expect(mockConnection.release).toHaveBeenCalled();
@@ -238,8 +249,13 @@ describe("Database migrations", () => {
         const { runMigrations, REQUIRED_TABLES } = await import("../src/database/migrations.js");
         mockReadFileSync.mockReturnValue("SELECT 1;");
         
+        // Table verification returns only first table
         mockPool.query.mockResolvedValueOnce([[{ TABLE_NAME: REQUIRED_TABLES[0] }]]);
         
+        // All nullable columns are already nullable (no ALTER needed)
+        // isColumnNullable uses connection.query
+        mockConnection.query.mockResolvedValue([[{ IS_NULLABLE: "YES" }]]);
+
         await expect(runMigrations()).rejects.toThrow(
             `Table verification failed. Missing tables: ${REQUIRED_TABLES.slice(1).join(", ")}`
         );
@@ -249,13 +265,122 @@ describe("Database migrations", () => {
         const { runMigrations, REQUIRED_TABLES } = await import("../src/database/migrations.js");
         mockReadFileSync.mockReturnValue("SELECT 1;");
         
+        // Table verification returns all required tables
         mockPool.query.mockResolvedValueOnce([REQUIRED_TABLES.map(t => ({ TABLE_NAME: t }))]);
-        mockPool.query.mockResolvedValueOnce([[{}]]);
+        mockPool.query.mockResolvedValueOnce([[{ DEFAULT_CHARACTER_SET_NAME: "utf8mb4", DEFAULT_COLLATION_NAME: "utf8mb4_unicode_ci" }]]);
         mockPool.query.mockResolvedValueOnce([[{ version: "1.0" }]]);
+
+        // All nullable columns are already nullable
+        // isColumnNullable uses connection.query, ALTER uses connection.execute
+        mockConnection.query.mockResolvedValue([[{ IS_NULLABLE: "YES" }]]);
 
         await runMigrations();
         expect(mockPool.query).toHaveBeenCalledWith(expect.stringContaining("WHERE TABLE_SCHEMA = ?"), ["nsw_transit"]);
         expect(mockPool.query).toHaveBeenCalledWith(expect.stringContaining("WHERE SCHEMA_NAME = ?"), ["nsw_transit"]);
+    });
+
+    it("should trigger ALTER for NOT NULL columns", async () => {
+        const { runMigrations, REQUIRED_TABLES } = await import("../src/database/migrations.js");
+        mockReadFileSync.mockReturnValue("SELECT 1;");
+        
+        mockPool.query.mockResolvedValueOnce([REQUIRED_TABLES.map(t => ({ TABLE_NAME: t }))]);
+        mockPool.query.mockResolvedValueOnce([[{ DEFAULT_CHARACTER_SET_NAME: "utf8mb4", DEFAULT_COLLATION_NAME: "utf8mb4_unicode_ci" }]]);
+        mockPool.query.mockResolvedValueOnce([[{ version: "10.4.11" }]]);
+
+        // Track calls to query (used for both isColumnNullable checks and ALTER statements)
+        const queryCalls: string[] = [];
+        mockConnection.query.mockImplementation((sql: string) => {
+            queryCalls.push(sql);
+            if (sql.includes("information_schema.COLUMNS")) {
+                // isColumnNullable returns NOT NULL (needs ALTER)
+                return Promise.resolve([[{ IS_NULLABLE: "NO" }]]);
+            }
+            // ALTER statements succeed
+            return Promise.resolve([{}]);
+        });
+
+        await runMigrations();
+
+        // 4 ALTER statements should be executed via connection.query
+        const alterCalls = queryCalls.filter(call => call.includes("ALTER TABLE"));
+        expect(alterCalls.length).toBe(4);
+        expect(alterCalls[0]!).toContain("ALTER TABLE gtfs_stops MODIFY stop_lat");
+        expect(alterCalls[1]!).toContain("ALTER TABLE gtfs_stops MODIFY stop_lon");
+        expect(alterCalls[2]!).toContain("ALTER TABLE gtfs_stop_times MODIFY arrival_time");
+        expect(alterCalls[3]!).toContain("ALTER TABLE gtfs_stop_times MODIFY departure_time");
+    });
+
+    it("should skip ALTER for already nullable columns", async () => {
+        const { runMigrations, REQUIRED_TABLES } = await import("../src/database/migrations.js");
+        mockReadFileSync.mockReturnValue("SELECT 1;");
+        
+        mockPool.query.mockResolvedValueOnce([REQUIRED_TABLES.map(t => ({ TABLE_NAME: t }))]);
+        mockPool.query.mockResolvedValueOnce([[{ DEFAULT_CHARACTER_SET_NAME: "utf8mb4", DEFAULT_COLLATION_NAME: "utf8mb4_unicode_ci" }]]);
+        mockPool.query.mockResolvedValueOnce([[{ version: "10.4.11" }]]);
+
+        // All columns already nullable - isColumnNullable uses connection.query
+        mockConnection.query.mockResolvedValue([[{ IS_NULLABLE: "YES" }]]);
+
+        await runMigrations();
+
+        // No ALTER statements should be executed
+        const alterCalls = mockConnection.execute.mock.calls.filter(
+            (call: unknown[]) => (call[0] as string).includes("ALTER TABLE")
+        );
+        expect(alterCalls.length).toBe(0);
+    });
+
+    it("should execute exactly zero ALTER when all four columns already nullable", async () => {
+        const { runMigrations, REQUIRED_TABLES } = await import("../src/database/migrations.js");
+        mockReadFileSync.mockReturnValue("SELECT 1;");
+        
+        mockPool.query.mockResolvedValueOnce([REQUIRED_TABLES.map(t => ({ TABLE_NAME: t }))]);
+        mockPool.query.mockResolvedValueOnce([[{ DEFAULT_CHARACTER_SET_NAME: "utf8mb4", DEFAULT_COLLATION_NAME: "utf8mb4_unicode_ci" }]]);
+        mockPool.query.mockResolvedValueOnce([[{ version: "10.4.11" }]]);
+
+        // All columns already nullable - isColumnNullable uses connection.query
+        mockConnection.query.mockResolvedValue([[{ IS_NULLABLE: "YES" }]]);
+
+        await runMigrations();
+
+        // Verify no ALTER TABLE calls were made
+        expect(mockConnection.execute).not.toHaveBeenCalledWith(
+            expect.stringContaining("ALTER TABLE gtfs_stops")
+        );
+        expect(mockConnection.execute).not.toHaveBeenCalledWith(
+            expect.stringContaining("ALTER TABLE gtfs_stop_times")
+        );
+    });
+
+    it("should always release connection on success and failure", async () => {
+        const { runMigrations, REQUIRED_TABLES } = await import("../src/database/migrations.js");
+        mockReadFileSync.mockReturnValue("SELECT 1;");
+        
+        mockPool.query.mockResolvedValueOnce([REQUIRED_TABLES.map(t => ({ TABLE_NAME: t }))]);
+        mockPool.query.mockResolvedValueOnce([[{ DEFAULT_CHARACTER_SET_NAME: "utf8mb4", DEFAULT_COLLATION_NAME: "utf8mb4_unicode_ci" }]]);
+        mockPool.query.mockResolvedValueOnce([[{ version: "10.4.11" }]]);
+        // isColumnNullable uses connection.query
+        mockConnection.query.mockResolvedValue([[{ IS_NULLABLE: "YES" }]]);
+
+        await runMigrations();
+        expect(mockConnection.release).toHaveBeenCalled();
+
+        // Reset and test error case
+        vi.resetModules();
+        mockConnection.release.mockClear();
+        mockConnection.query.mockRejectedValue(new Error("Connection error"));
+        
+        vi.doMock("node:fs", () => ({
+            readFileSync: mockReadFileSync,
+        }));
+        vi.doMock("../src/database/pool.js", () => ({
+            getDatabasePool: vi.fn().mockReturnValue(mockPool),
+        }));
+
+        const { runMigrations: runMigrations2 } = await import("../src/database/migrations.js");
+        
+        await expect(runMigrations2()).rejects.toThrow();
+        expect(mockConnection.release).toHaveBeenCalled();
     });
 });
 

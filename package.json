@@ -12,7 +12,9 @@
     "gtfs:extract:latest": "tsx src/cli.ts extract-latest",
     "gtfs:parse": "tsx src/cli.ts parse",
     "gtfs:parse:latest": "tsx src/cli.ts parse-latest",
-    "db:migrate": "tsx src/cli.ts db-migrate"
+    "db:migrate": "tsx src/cli.ts db-migrate",
+    "gtfs:import": "tsx src/cli.ts import",
+    "gtfs:import:latest": "tsx src/cli.ts import-latest"
   },
   "keywords": [
     "gtfs",

@@ -13,6 +13,7 @@ import { downloadGtfs } from "./download/downloadGtfs.js";
 import { extractGtfs } from "./extract/extractGtfs.js";
 import { parseGtfs, parseLatestExtraction } from "./parse/index.js";
 import { runMigrations, closeDatabasePool } from "./database/index.js";
+import { importGtfs, importGtfsLatest } from "./import/index.js";
 import {
     validateDownloadEnv,
     validateExtractionEnv,
@@ -29,6 +30,7 @@ import {
     GTFS_MAX_SINGLE_FILE_BYTES,
     GTFS_MAX_TOTAL_UNCOMPRESSED_BYTES,
 } from "./config/env.js";
+import { getImportConfig } from "./import/importConfig.js";
 import {
     MissingTokenError,
     InvalidURLError,
@@ -60,7 +62,7 @@ import {
 config();
 
 // Command name from process.argv
-type CliCommand = "download" | "extract" | "extract-latest" | "parse" | "parse-latest" | "db-migrate";
+type CliCommand = "download" | "extract" | "extract-latest" | "parse" | "parse-latest" | "db-migrate" | "import" | "import-latest";
 
 interface CliResult {
     success: boolean;
@@ -141,6 +143,27 @@ function formatMigrationOutput(result: Awaited<ReturnType<typeof runMigrations>>
         `Collation: ${result.collation}`,
         `Tables verified: ${result.tablesVerified}`,
     ];
+    return lines.join("\n");
+}
+
+function formatImportOutput(result: Awaited<ReturnType<typeof importGtfs>>): string {
+    const lines = [
+        "GTFS import completed",
+        `Import ID: ${result.importId}`,
+        `Directory: ${result.extractedDirectory}`,
+        `Rows processed: ${result.totalProcessedRows.toLocaleString()}`,
+        `Rows accepted: ${result.totalAcceptedRows.toLocaleString()}`,
+        `Rows rejected: ${result.totalRejectedRows.toLocaleString()}`,
+        `Warnings: ${result.warningCount.toLocaleString()}`,
+        `Errors: ${result.errorCount.toLocaleString()}`,
+        "",
+        "Imported rows:",
+    ];
+
+    for (const [fileName, count] of Object.entries(result.importedRowsByFile)) {
+        lines.push(`  ${fileName}: ${count.toLocaleString()}`);
+    }
+
     return lines.join("\n");
 }
 
@@ -423,6 +446,8 @@ function getCommand(): CliCommand {
     if (arg === "parse") return "parse";
     if (arg === "parse-latest") return "parse-latest";
     if (arg === "db-migrate") return "db-migrate";
+    if (arg === "import") return "import";
+    if (arg === "import-latest") return "import-latest";
 
     console.error(`Unknown command: ${arg}`);
     process.exit(1);
@@ -460,6 +485,17 @@ async function main(): Promise<CliResult> {
 
             case "db-migrate":
                 return await handleDbMigrate();
+
+            case "import": {
+                const dirArg = process.argv[3];
+                if (!dirArg) {
+                    return { success: false, exitCode: 1, message: "Error: Please specify the extraction directory." };
+                }
+                return await handleImport(dirArg);
+            }
+
+            case "import-latest":
+                return await handleImportLatest();
         }
     } catch (err) {
         const errorMessage = err instanceof Error ? formatError(err) : "An unexpected error occurred.";
@@ -468,6 +504,82 @@ async function main(): Promise<CliResult> {
             exitCode: 1,
             message: errorMessage,
         };
+    }
+}
+
+async function handleImport(directory: string): Promise<CliResult> {
+    try {
+        // Validate environment
+        getDatabaseConfig();
+        const { insertBatchSize } = getImportConfig();
+
+        // Run migrations first
+        await runMigrations();
+
+        // Import the feed
+        const result = await importGtfs({
+            extractedDirectory: directory,
+            parseBatchSize: GTFS_PARSE_BATCH_SIZE,
+            insertBatchSize,
+            maxIssues: GTFS_PARSE_MAX_ISSUES,
+        });
+
+        return {
+            success: true,
+            exitCode: 0,
+            message: formatImportOutput(result),
+        };
+    } catch (err) {
+        const errorMessage = err instanceof Error ? formatError(err) : "An unexpected error occurred.";
+        return {
+            success: false,
+            exitCode: 1,
+            message: errorMessage,
+        };
+    } finally {
+        // Always close the pool
+        await closeDatabasePool();
+    }
+}
+
+async function handleImportLatest(): Promise<CliResult> {
+    try {
+        // Validate environment
+        getDatabaseConfig();
+        const { insertBatchSize } = getImportConfig();
+
+        // Run migrations first
+        await runMigrations();
+
+        // Import the latest extraction
+        const result = await importGtfsLatest({
+            parseBatchSize: GTFS_PARSE_BATCH_SIZE,
+            insertBatchSize,
+            maxIssues: GTFS_PARSE_MAX_ISSUES,
+        });
+
+        return {
+            success: true,
+            exitCode: 0,
+            message: formatImportOutput(result),
+        };
+    } catch (err) {
+        const errorMessage = err instanceof Error ? formatError(err) : "An unexpected error occurred.";
+        if (err instanceof Error && err.message.includes("No completed extractions")) {
+            return {
+                success: false,
+                exitCode: 1,
+                message: `Error: No completed GTFS extractions found in ${GTFS_EXTRACTION_DIR}. Run 'npm run gtfs:extract' or 'npm run gtfs:extract:latest' first.`,
+            };
+        }
+        return {
+            success: false,
+            exitCode: 1,
+            message: errorMessage,
+        };
+    } finally {
+        // Always close the pool
+        await closeDatabasePool();
     }
 }
 

@@ -9,6 +9,20 @@ import { join } from "node:path";
 import { getDatabasePool } from "./pool.js";
 import { getDatabaseConfig } from "../config/env.js";
 
+/**
+ * Parse SQL statements from a multi-statement SQL string.
+ * Removes comment lines and splits by semicolon.
+ */
+export function parseSqlStatements(sql: string): string[] {
+    return sql
+        .split(/\r?\n/)
+        .filter((line) => !line.trimStart().startsWith("--"))
+        .join("\n")
+        .split(";")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+}
+
 const REQUIRED_TABLES = [
     "gtfs_feed_imports",
     "gtfs_agencies",
@@ -32,6 +46,79 @@ export interface MigrationResult {
     serverVersion?: string;
 }
 
+interface ColumnNullableInfo {
+    tableName: string;
+    columnName: string;
+    alterStatement: string;
+}
+
+const NULLABLE_COLUMNS: ColumnNullableInfo[] = [
+    {
+        tableName: "gtfs_stops",
+        columnName: "stop_lat",
+        alterStatement: "ALTER TABLE gtfs_stops MODIFY stop_lat DECIMAL(10,7) NULL",
+    },
+    {
+        tableName: "gtfs_stops",
+        columnName: "stop_lon",
+        alterStatement: "ALTER TABLE gtfs_stops MODIFY stop_lon DECIMAL(10,7) NULL",
+    },
+    {
+        tableName: "gtfs_stop_times",
+        columnName: "arrival_time",
+        alterStatement: "ALTER TABLE gtfs_stop_times MODIFY arrival_time VARCHAR(32) NULL",
+    },
+    {
+        tableName: "gtfs_stop_times",
+        columnName: "departure_time",
+        alterStatement: "ALTER TABLE gtfs_stop_times MODIFY departure_time VARCHAR(32) NULL",
+    },
+];
+
+/**
+ * Check if a column is nullable.
+ */
+async function isColumnNullable(
+    connection: mysql.PoolConnection,
+    database: string,
+    tableName: string,
+    columnName: string
+): Promise<boolean> {
+    const [rows] = await connection.query<mysql.RowDataPacket[]>(
+        `SELECT IS_NULLABLE
+         FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = ?
+           AND TABLE_NAME = ?
+           AND COLUMN_NAME = ?`,
+        [database, tableName, columnName]
+    );
+    return rows.length > 0 && rows[0].IS_NULLABLE === "YES";
+}
+
+/**
+ * Make nullable columns configurable (NULL) if not already nullable.
+ * Uses conditional ALTER to prevent unnecessary table locks.
+ */
+async function migrateNullableColumns(connection: mysql.PoolConnection, database: string): Promise<number> {
+    let alterCount = 0;
+
+    for (const col of NULLABLE_COLUMNS) {
+        const isNullable = await isColumnNullable(connection, database, col.tableName, col.columnName);
+
+        if (!isNullable) {
+            try {
+                await connection.query(col.alterStatement);
+                alterCount++;
+            } catch (error: unknown) {
+                const message = error instanceof Error ? error.message : String(error);
+                throw new Error(`Failed to alter ${col.tableName}.${col.columnName}: ${message}`);
+            }
+        }
+    }
+
+    return alterCount;
+}
+
 /**
  * Run database migrations.
  * Reads schema.sql and executes it safely against the database.
@@ -39,6 +126,7 @@ export interface MigrationResult {
  */
 export async function runMigrations(): Promise<MigrationResult> {
     const pool = getDatabasePool();
+    const config = getDatabaseConfig();
 
     // Read schema file
     const schemaPath = join(process.cwd(), "database", "schema.sql");
@@ -49,21 +137,12 @@ export async function runMigrations(): Promise<MigrationResult> {
         throw new Error(`Schema file not found: ${schemaPath}`);
     }
 
-    // Remove comment lines and split by semicolons
-    const executableSql = schemaContent
-        .split(/\r?\n/)
-        .filter((line) => !line.trimStart().startsWith("--"))
-        .join("\n");
+    // Execute schema statements
+    const schemaStatements = parseSqlStatements(schemaContent);
 
-    const statements = executableSql
-        .split(";")
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
-
-    // Execute each statement using a dedicated connection
     let connection = await pool.getConnection();
     try {
-        for (const statement of statements) {
+        for (const statement of schemaStatements) {
             try {
                 await connection.query(statement);
             } catch (error: unknown) {
@@ -71,12 +150,14 @@ export async function runMigrations(): Promise<MigrationResult> {
                 throw new Error(`Migration SQL failed: ${message}`);
             }
         }
+
+        // Run conditional nullable column migration
+        await migrateNullableColumns(connection, config.database);
     } finally {
         connection.release();
     }
 
     // Verify required tables using validated config
-    const config = getDatabaseConfig();
     const [rows] = await pool.query<mysql.RowDataPacket[]>(
         `SELECT TABLE_NAME FROM information_schema.TABLES
          WHERE TABLE_SCHEMA = ?`,
