@@ -5,11 +5,125 @@
  */
 
 import { describe, it, expect, vi } from "vitest";
-import { createPendingImport, completeImport, deactivatePreviousActiveImport } from "../src/import/importRepository.js";
+import { createPendingImport, completeImport, deactivatePreviousActiveImport, markImportFailed } from "../src/import/importRepository.js";
+import type { MarkImportFailedParams } from "../src/import/importRepository.js";
 import type { PoolConnection } from "mysql2/promise";
 import type { ImportStats } from "../src/import/types.js";
 
 describe("importRepository", () => {
+    describe("markImportFailed", () => {
+        it("should execute correct UPDATE SQL with all statistics", async () => {
+            let lastCall: [string, unknown[]] | null = null;
+            const mockExecute = vi.fn().mockImplementation(async (sql: string, values: unknown[]) => {
+                lastCall = [sql, values];
+                return [{ affectedRows: 1 }];
+            });
+            const mockConn = { execute: mockExecute } as unknown as PoolConnection;
+
+            const stats: ImportStats = {
+                totalProcessedRows: 500,
+                totalAcceptedRows: 480,
+                totalRejectedRows: 20,
+                warningCount: 5,
+                errorCount: 3,
+                rowsByFile: new Map(),
+            };
+            const completedAt = new Date("2026-07-20T14:00:00Z");
+
+            await markImportFailed({
+                connection: mockConn,
+                importId: 42,
+                completedAt,
+                stats,
+            });
+
+            expect(lastCall).not.toBeNull();
+            const [sql, params] = lastCall!;
+
+            // Verify SQL contains all required updates
+            expect(sql).toContain("UPDATE gtfs_feed_imports");
+            expect(sql).toContain("status = 'failed'");
+            expect(sql).toContain("is_active = 0");
+            expect(sql).toContain("completed_at = ?");
+            expect(sql).toContain("total_processed_rows = ?");
+            expect(sql).toContain("total_accepted_rows = ?");
+            expect(sql).toContain("total_rejected_rows = ?");
+            expect(sql).toContain("warning_count = ?");
+            expect(sql).toContain("error_count = ?");
+            expect(sql).toContain("WHERE id = ?");
+
+            // Verify exact parameter order
+            expect(params).toEqual([
+                completedAt,
+                500,
+                480,
+                20,
+                5,
+                3,
+                42,
+            ]);
+        });
+
+        it("should resolve successfully when affectedRows = 1", async () => {
+            const mockExecute = vi.fn().mockResolvedValue([{ affectedRows: 1 }]);
+            const mockConn = { execute: mockExecute } as unknown as PoolConnection;
+
+            await expect(markImportFailed({
+                connection: mockConn,
+                importId: 1,
+                completedAt: new Date(),
+                stats: {
+                    totalProcessedRows: 0,
+                    totalAcceptedRows: 0,
+                    totalRejectedRows: 0,
+                    warningCount: 0,
+                    errorCount: 0,
+                    rowsByFile: new Map(),
+                },
+            })).resolves.toBeUndefined();
+        });
+
+        it("should throw when affectedRows = 0", async () => {
+            const mockExecute = vi.fn().mockResolvedValue([{ affectedRows: 0 }]);
+            const mockConn = { execute: mockExecute } as unknown as PoolConnection;
+
+            await expect(markImportFailed({
+                connection: mockConn,
+                importId: 999,
+                completedAt: new Date(),
+                stats: {
+                    totalProcessedRows: 0,
+                    totalAcceptedRows: 0,
+                    totalRejectedRows: 0,
+                    warningCount: 0,
+                    errorCount: 0,
+                    rowsByFile: new Map(),
+                },
+            })).rejects.toThrow("Failed import metadata row was not found: importId=999");
+        });
+
+        it("should use supplied transaction connection", async () => {
+            const mockExecute = vi.fn().mockResolvedValue([{ affectedRows: 1 }]);
+            const mockConn = { execute: mockExecute } as unknown as PoolConnection;
+
+            await markImportFailed({
+                connection: mockConn,
+                importId: 1,
+                completedAt: new Date(),
+                stats: {
+                    totalProcessedRows: 0,
+                    totalAcceptedRows: 0,
+                    totalRejectedRows: 0,
+                    warningCount: 0,
+                    errorCount: 0,
+                    rowsByFile: new Map(),
+                },
+            });
+
+            expect(mockExecute).toHaveBeenCalled();
+        });
+    });
+
     describe("createPendingImport", () => {
         it("should execute correct INSERT SQL with all parameters", async () => {
             let lastCall: [string, unknown[]] | null = null;

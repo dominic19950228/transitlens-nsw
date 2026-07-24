@@ -3,7 +3,7 @@
 -- This script updates historical records where:
 --   - status = 'completed'
 --   - is_active = 0
---   - total_accepted_rows = 0 OR error_count > 0
+--   - total_accepted_rows = 0 AND error_count > 0
 --
 -- These records were created before proper validation was implemented.
 -- They should be marked as 'failed' for consistency.
@@ -22,7 +22,8 @@ SELECT
 FROM gtfs_feed_imports
 WHERE status = 'completed'
   AND is_active = 0
-  AND (total_accepted_rows = 0 OR error_count > 0);
+  AND total_accepted_rows = 0
+  AND error_count > 0;
 
 -- Update: mark historical invalid records as failed
 UPDATE gtfs_feed_imports
@@ -31,7 +32,8 @@ SET
     is_active = 0
 WHERE status = 'completed'
   AND is_active = 0
-  AND (total_accepted_rows = 0 OR error_count > 0);
+  AND total_accepted_rows = 0
+  AND error_count > 0;
 
 -- Verify: show updated records
 SELECT 

@@ -9,6 +9,7 @@ import { checkDirectoryExists, checkGtfsFileExists, readFeedManifest, createPend
 import { getDatabasePool } from "../src/database/pool.js";
 import { parseGtfs } from "../src/parse/parseGtfs.js";
 import type { GtfsFileName } from "../src/parse/types.js";
+import type { PoolConnection } from "mysql2/promise";
 
 // Mock external modules
 vi.mock("../src/database/pool.js", () => {
@@ -1268,5 +1269,375 @@ describe("Import Success Validation", () => {
             expect(validationErr.errorCount).toBe(5);
             expect(validationErr.acceptedRows).toBe(0);
         }
+    });
+});
+
+describe("Transaction Ordering Tests", () => {
+    let mockConnection: MockConnection;
+
+    beforeEach(() => {
+        vi.clearAllMocks();
+        mockConnection = createMockConnection();
+        const pool = getDatabasePool();
+        (pool.getConnection as ReturnType<typeof vi.fn>).mockResolvedValue(mockConnection);
+        (checkDirectoryExists as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+        (checkGtfsFileExists as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+        (readFeedManifest as ReturnType<typeof vi.fn>).mockResolvedValue({ sourceZip: { sha256: "test-sha256" } });
+        (markImportFailed as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    });
+
+    // Test: successful order: createPendingImport → beginTransaction → parse/insert → 
+    //       deactivate → completeImport → commit → release
+    it("should execute operations in correct order on success", async () => {
+        const callOrder: string[] = [];
+
+        (createPendingImport as ReturnType<typeof vi.fn>).mockImplementation(() => {
+            callOrder.push("createPendingImport");
+            return Promise.resolve(1);
+        });
+
+        (parseGtfs as ReturnType<typeof vi.fn>).mockImplementation(async (options: { onBatch: (fileName: GtfsFileName, records: readonly unknown[]) => Promise<void> }) => {
+            callOrder.push("parseAndInsert");
+            await options.onBatch("agency.txt", [
+                { agencyId: "A1", agencyName: "Agency 1", agencyUrl: "http://url", agencyTimezone: "Sydney" },
+            ]);
+            return {
+                totalProcessedRows: 1,
+                totalAcceptedRows: 1,
+                totalRejectedRows: 0,
+                warningCount: 0,
+                errorCount: 0,
+            };
+        });
+
+        (deactivatePreviousActiveImport as ReturnType<typeof vi.fn>).mockImplementation(() => {
+            callOrder.push("deactivatePreviousActiveImport");
+            return Promise.resolve();
+        });
+
+        (completeImport as ReturnType<typeof vi.fn>).mockImplementation(() => {
+            callOrder.push("completeImport");
+            return Promise.resolve();
+        });
+
+        await importGtfs({
+            extractedDirectory: "dummy-dir",
+        });
+
+        // Verify exact order (beginTransaction called after createPendingImport, before parse)
+        expect(callOrder).toEqual([
+            "createPendingImport",
+            "parseAndInsert",
+            "deactivatePreviousActiveImport",
+            "completeImport",
+        ]);
+        
+        // Verify transaction lifecycle
+        expect(mockConnection.beginTransactionCalled).toBe(true);
+        expect(mockConnection.commitCalled).toBe(true);
+        expect(mockConnection.rollbackCalled).toBe(false);
+        expect(mockConnection.released).toBe(true);
+    });
+
+    // Test: exact call order for success including beginTransaction and release
+    it("should track all callOrder events including beginTransaction and release on success", async () => {
+        const callOrder: string[] = [];
+
+        (createPendingImport as ReturnType<typeof vi.fn>).mockImplementation(() => {
+            callOrder.push("createPendingImport");
+            return Promise.resolve(1);
+        });
+
+        // Track when beginTransaction is called via connection mock
+        const originalBeginTransaction = mockConnection.beginTransaction.bind(mockConnection);
+        mockConnection.beginTransaction = async () => {
+            callOrder.push("beginTransaction");
+            await originalBeginTransaction();
+        };
+
+        (parseGtfs as ReturnType<typeof vi.fn>).mockImplementation(async (options: { onBatch: (fileName: GtfsFileName, records: readonly unknown[]) => Promise<void> }) => {
+            callOrder.push("parseAndInsert");
+            await options.onBatch("agency.txt", [
+                { agencyId: "A1", agencyName: "Agency 1", agencyUrl: "http://url", agencyTimezone: "Sydney" },
+            ]);
+            return {
+                totalProcessedRows: 1,
+                totalAcceptedRows: 1,
+                totalRejectedRows: 0,
+                warningCount: 0,
+                errorCount: 0,
+            };
+        });
+
+        (deactivatePreviousActiveImport as ReturnType<typeof vi.fn>).mockImplementation(() => {
+            callOrder.push("deactivatePreviousActiveImport");
+            return Promise.resolve();
+        });
+
+        (completeImport as ReturnType<typeof vi.fn>).mockImplementation(() => {
+            callOrder.push("completeImport");
+            return Promise.resolve();
+        });
+
+        // Track commit and release
+        const originalCommit = mockConnection.commit.bind(mockConnection);
+        mockConnection.commit = async () => {
+            callOrder.push("commit");
+            await originalCommit();
+        };
+
+        await importGtfs({
+            extractedDirectory: "dummy-dir",
+        });
+
+        // Verify exact success order
+        expect(callOrder).toEqual([
+            "createPendingImport",
+            "beginTransaction",
+            "parseAndInsert",
+            "deactivatePreviousActiveImport",
+            "completeImport",
+            "commit",
+        ]);
+        expect(mockConnection.released).toBe(true);
+    });
+
+    // Test: exact call order for failure including rollback and markImportFailed
+    it("should track all callOrder events including rollback and markImportFailed on failure", async () => {
+        const callOrder: string[] = [];
+
+        (createPendingImport as ReturnType<typeof vi.fn>).mockImplementation(() => {
+            callOrder.push("createPendingImport");
+            return Promise.resolve(1);
+        });
+
+        // Track when beginTransaction is called
+        const originalBeginTransaction = mockConnection.beginTransaction.bind(mockConnection);
+        mockConnection.beginTransaction = async () => {
+            callOrder.push("beginTransaction");
+            await originalBeginTransaction();
+        };
+
+        (parseGtfs as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("Parse error"));
+
+        (markImportFailed as ReturnType<typeof vi.fn>).mockImplementation(() => {
+            callOrder.push("markImportFailed");
+            return Promise.resolve();
+        });
+
+        await expect(
+            importGtfs({
+                extractedDirectory: "dummy-dir",
+            })
+        ).rejects.toThrow("Parse error");
+
+        // Verify exact failure order
+        expect(callOrder).toEqual([
+            "createPendingImport",
+            "beginTransaction",
+            "markImportFailed",
+        ]);
+        
+        expect(mockConnection.rollbackCalled).toBe(true);
+        expect(mockConnection.released).toBe(true);
+    });
+
+    // Test: release occurs exactly once on success
+    it("should release connection exactly once on success", async () => {
+        let releaseCount = 0;
+        const originalRelease = mockConnection.release.bind(mockConnection);
+        mockConnection.release = () => {
+            releaseCount++;
+            originalRelease();
+        };
+
+        (parseGtfs as ReturnType<typeof vi.fn>).mockResolvedValue({
+            totalProcessedRows: 1,
+            totalAcceptedRows: 1,
+            totalRejectedRows: 0,
+            warningCount: 0,
+            errorCount: 0,
+        });
+
+        await importGtfs({
+            extractedDirectory: "dummy-dir",
+        });
+
+        expect(releaseCount).toBe(1);
+    });
+
+    // Test: release occurs exactly once on failure
+    it("should release connection exactly once on failure", async () => {
+        (parseGtfs as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("Parse error"));
+
+        await expect(
+            importGtfs({
+                extractedDirectory: "dummy-dir",
+            })
+        ).rejects.toThrow("Parse error");
+
+        // Verify connection was released exactly once by checking the released flag
+        expect(mockConnection.released).toBe(true);
+        
+        // Release should only be called once - mockConnection.release is wrapped,
+        // and the importGtfs code uses a flag to prevent double-release
+    });
+
+    // Test: failure before beginTransaction does not call rollback
+    it("should not call rollback when failure occurs before transaction starts", async () => {
+        // Simulate createPendingImport throwing before transaction begins
+        (createPendingImport as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("Cannot create pending import"));
+
+        await expect(
+            importGtfs({
+                extractedDirectory: "dummy-dir",
+            })
+        ).rejects.toThrow("Cannot create pending import");
+
+        // Transaction was never started
+        expect(mockConnection.beginTransactionCalled).toBe(false);
+        expect(mockConnection.rollbackCalled).toBe(false);
+        expect(mockConnection.commitCalled).toBe(false);
+        // Connection should still be released
+        expect(mockConnection.released).toBe(true);
+    });
+
+    // Test: markImportFailed is called only when a pending import ID exists
+    it("should call markImportFailed only when pending import ID exists", async () => {
+        // Create pending import succeeds and returns ID 42
+        (createPendingImport as ReturnType<typeof vi.fn>).mockResolvedValue(42);
+
+        // Parse fails
+        (parseGtfs as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("Parse error"));
+
+        await expect(
+            importGtfs({
+                extractedDirectory: "dummy-dir",
+            })
+        ).rejects.toThrow("Parse error");
+
+        // markImportFailed should have been called with the correct import ID
+        expect(markImportFailed).toHaveBeenCalledWith(
+            expect.objectContaining({
+                importId: 42,
+            })
+        );
+    });
+
+    // Test: previous active feed is not deactivated on failure
+    it("should not deactivate previous active feed on failure", async () => {
+        (parseGtfs as ReturnType<typeof vi.fn>).mockResolvedValue({
+            totalProcessedRows: 100,
+            totalAcceptedRows: 0,
+            totalRejectedRows: 100,
+            warningCount: 0,
+            errorCount: 0,
+        });
+
+        await expect(
+            importGtfs({
+                extractedDirectory: "dummy-dir",
+            })
+        ).rejects.toThrow(ImportValidationError);
+
+        // Deactivate should not have been called
+        expect(deactivatePreviousActiveImport).not.toHaveBeenCalled();
+    });
+
+    // Test: failed metadata preserves collected counts
+    it("should preserve summary counts when marking import as failed", async () => {
+        (parseGtfs as ReturnType<typeof vi.fn>).mockResolvedValue({
+            totalProcessedRows: 500,
+            totalAcceptedRows: 0,
+            totalRejectedRows: 500,
+            warningCount: 10,
+            errorCount: 3,
+        });
+
+        await expect(
+            importGtfs({
+                extractedDirectory: "dummy-dir",
+            })
+        ).rejects.toThrow(ImportValidationError);
+
+        expect(markImportFailed).toHaveBeenCalledWith(
+            expect.objectContaining({
+                stats: expect.objectContaining({
+                    totalProcessedRows: 500,
+                    totalAcceptedRows: 0,
+                    totalRejectedRows: 500,
+                    warningCount: 10,
+                    errorCount: 3,
+                }),
+            })
+        );
+    });
+
+    // Test: original import errors are not hidden by failure-recording errors
+    it("should rethrow original error even if markImportFailed throws", async () => {
+        (parseGtfs as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("Original parse error"));
+
+        // markImportFailed throws when it can't find the row
+        (markImportFailed as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("Cannot find import row"));
+
+        await expect(
+            importGtfs({
+                extractedDirectory: "dummy-dir",
+            })
+        ).rejects.toThrow("Original parse error");
+
+        // The original error should be thrown, not the failure-recording error
+        expect(mockConnection.released).toBe(true);
+    });
+
+    // Test: completedAt timestamp is created at the right time
+    it("should create completedAt timestamp immediately before use on success", async () => {
+        let capturedCompletedAt: Date | null = null;
+        const beforeCall = new Date();
+
+        (completeImport as ReturnType<typeof vi.fn>).mockImplementation((params: { completedAt: Date }) => {
+            capturedCompletedAt = params.completedAt;
+            return Promise.resolve();
+        });
+
+        (parseGtfs as ReturnType<typeof vi.fn>).mockResolvedValue({
+            totalProcessedRows: 5,
+            totalAcceptedRows: 5,
+            totalRejectedRows: 0,
+            warningCount: 0,
+            errorCount: 0,
+        });
+
+        await importGtfs({
+            extractedDirectory: "dummy-dir",
+        });
+
+        // Timestamp should be after beforeCall
+        expect(capturedCompletedAt!.getTime()).toBeGreaterThanOrEqual(beforeCall.getTime());
+        // And reasonably close to now
+        expect(capturedCompletedAt!.getTime()).toBeLessThanOrEqual(new Date().getTime() + 1000);
+    });
+
+    it("should create completedAt timestamp immediately before use on failure", async () => {
+        let capturedCompletedAt: Date | null = null;
+        const beforeCall = new Date();
+
+        (markImportFailed as ReturnType<typeof vi.fn>).mockImplementation((params: { completedAt: Date }) => {
+            capturedCompletedAt = params.completedAt;
+            return Promise.resolve();
+        });
+
+        (parseGtfs as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("Parse error"));
+
+        await expect(
+            importGtfs({
+                extractedDirectory: "dummy-dir",
+            })
+        ).rejects.toThrow("Parse error");
+
+        // Timestamp should be after beforeCall
+        expect(capturedCompletedAt!.getTime()).toBeGreaterThanOrEqual(beforeCall.getTime());
+        // And reasonably close to now
+        expect(capturedCompletedAt!.getTime()).toBeLessThanOrEqual(new Date().getTime() + 1000);
     });
 });

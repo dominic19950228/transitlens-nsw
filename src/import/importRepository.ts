@@ -85,11 +85,13 @@ export async function completeImport(params: CompleteImportParams): Promise<void
  * Does NOT mark as active.
  * 
  * Use this after rollback to record the failed import metadata.
+ * 
+ * @throws Error if the import row is not found (affectedRows !== 1)
  */
 export async function markImportFailed(params: MarkImportFailedParams): Promise<void> {
     const { connection, importId, completedAt, stats } = params;
 
-    await connection.execute<ResultSetHeader>(
+    const [result] = await connection.execute<ResultSetHeader>(
         `UPDATE gtfs_feed_imports 
          SET status = 'failed',
              is_active = 0,
@@ -110,6 +112,11 @@ export async function markImportFailed(params: MarkImportFailedParams): Promise<
             importId,
         ]
     );
+
+    // Verify the row was actually updated
+    if (result.affectedRows !== 1) {
+        throw new Error(`Failed import metadata row was not found: importId=${importId}`);
+    }
 }
 
 /**

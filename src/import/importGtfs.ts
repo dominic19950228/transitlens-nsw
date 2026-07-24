@@ -1,6 +1,11 @@
 /**
  * GTFS Import orchestrator.
  * Step 4B: Stream parsed GTFS batches and insert into MariaDB.
+ * 
+ * Transaction ordering:
+ * - Successful import: create pending row (auto-commit) → begin transaction → parse/insert → 
+ *                      deactivate → complete → commit → release
+ * - Failed import:      rollback if transaction started → mark failed (auto-commit, fresh conn) → release → rethrow
  */
 
 import { parseGtfs } from "../parse/parseGtfs.js";
@@ -21,7 +26,6 @@ import {
 
 import { insertBatch } from "./batchInserters.js";
 import { getDatabasePool } from "../database/pool.js";
-import type { PoolConnection } from "mysql2/promise";
 
 // Required GTFS files
 const REQUIRED_FILES: GtfsFileName[] = [
@@ -126,8 +130,30 @@ function validateImportSuccess(stats: ImportStats): void {
 }
 
 /**
+ * Record failed import metadata using a fresh connection from the pool.
+ * This is independent of the GTFS transaction connection.
+ */
+async function recordFailedImport(
+    importId: number,
+    completedAt: Date,
+    stats: ImportStats
+): Promise<void> {
+    const pool = getDatabasePool();
+    const freshConnection = await pool.getConnection();
+    try {
+        await markImportFailed({
+            connection: freshConnection,
+            importId,
+            completedAt,
+            stats,
+        });
+    } finally {
+        freshConnection.release();
+    }
+}
+
+/**
  * Import GTFS feed from an extracted directory.
- * Uses a single transaction for all operations.
  * 
  * Success conditions:
  * - Parser/import finishes without fatal exception
@@ -135,6 +161,26 @@ function validateImportSuccess(stats: ImportStats): void {
  * - acceptedRows > 0
  * - All database inserts succeed
  * - Transaction commits successfully
+ * 
+ * Transaction ordering (successful):
+ * 1. acquire connection
+ * 2. create pending import metadata row in auto-commit mode
+ * 3. begin the GTFS transaction
+ * 4. parse and insert GTFS data
+ * 5. validate errorCount === 0 and acceptedRows > 0
+ * 6. deactivate previous active feed inside the transaction
+ * 7. mark new feed completed and active inside the transaction
+ * 8. commit
+ * 9. release connection
+ * 
+ * Transaction ordering (failed):
+ * 1. roll back GTFS transaction if it has started
+ * 2. leave previous active feed unchanged
+ * 3. mark pending metadata row as failed using fresh connection (auto-commit)
+ * 4. preserve all available summary counts
+ * 5. set completed_at using actual failure time
+ * 6. release connection
+ * 7. rethrow original error
  */
 export async function importGtfs(
     options: ImportGtfsOptions
@@ -166,6 +212,11 @@ export async function importGtfs(
     const pool = getDatabasePool();
     const connection = await pool.getConnection();
 
+    // Track state for proper cleanup
+    let importId: number | null = null;
+    let transactionStarted = false;
+    let connectionReleased = false;
+
     // Initialize stats tracking
     const stats: ImportStats = {
         totalProcessedRows: 0,
@@ -176,25 +227,30 @@ export async function importGtfs(
         rowsByFile: new Map(),
     };
 
-    let importId: number | null = null;
-    let importCreated = false;
     const startedAt = new Date();
-    const completedAt = new Date();
+
+    // Helper to release connection exactly once
+    const releaseConnection = (): void => {
+        if (!connectionReleased) {
+            connection.release();
+            connectionReleased = true;
+        }
+    };
 
     try {
-        // Begin transaction
-        await connection.beginTransaction();
-
-        // Create pending import record
+        // Step 1: Create pending import metadata row in auto-commit mode
         importId = await createPendingImport({
             connection,
             sourceDirectory: extractedDirectory,
             sourceArchiveSha256: sourceSha256,
             startedAt,
         });
-        importCreated = true;
 
-        // Parse GTFS and insert batches
+        // Step 2: Begin the GTFS transaction
+        await connection.beginTransaction();
+        transactionStarted = true;
+
+        // Step 3: Parse GTFS and insert batches
         const parseResult = await parseGtfs({
             extractedDirectory,
             batchSize: parseBatchSize,
@@ -205,10 +261,14 @@ export async function importGtfs(
                     return;
                 }
 
+                if (importId === null) {
+                    throw new Error("Import ID is null during batch insertion");
+                }
+
                 // Insert batch and track row counts
                 const inserted = await insertBatch(
                     connection,
-                    importId!,
+                    importId,
                     fileName,
                     records,
                     insertBatchSize
@@ -227,16 +287,15 @@ export async function importGtfs(
         stats.warningCount = parseResult.warningCount;
         stats.errorCount = parseResult.errorCount;
 
-        // Validate success conditions BEFORE modifying any state
-        // This ensures we don't deactivate the previous feed or mark completion
-        // if the import had errors or no accepted rows
+        // Step 4: Validate success conditions BEFORE modifying any state
         validateImportSuccess(stats);
 
-        // Validation passed: proceed with completing the import
-        // 1. Deactivate previous active imports FIRST
+        // Step 5: Deactivate previous active imports FIRST (inside transaction)
         await deactivatePreviousActiveImport(connection, importId);
 
-        // 2. Complete this import (marks as completed and active)
+        // Step 6: Complete this import (marks as completed and active)
+        // Create completion timestamp immediately before use
+        const completedAt = new Date();
         await completeImport({
             connection,
             importId,
@@ -244,10 +303,12 @@ export async function importGtfs(
             stats,
         });
 
-        // 3. Commit transaction
+        // Step 7: Commit transaction
         await connection.commit();
+        // Mark transaction as ended so later errors won't try to rollback
+        transactionStarted = false;
 
-        // Convert rowsByFile to Record<string, number>
+        // Step 8: Convert rowsByFile to Record<string, number>
         const importedRowsByFile: Record<string, number> = {};
         for (const [fileName, count] of stats.rowsByFile) {
             importedRowsByFile[fileName] = count;
@@ -266,66 +327,48 @@ export async function importGtfs(
             importedRowsByFile,
         };
     } catch (err) {
-        // Rollback GTFS data transaction
-        let rollbackErr: Error | null = null;
-        try {
-            await connection.rollback();
-        } catch (e) {
-            rollbackErr = e instanceof Error ? e : new Error(String(e));
-        }
-
-        // If both original error and rollback error exist, wrap in AggregateError
-        if (rollbackErr) {
-            const agg = new AggregateError([err, rollbackErr], "Import failed and rollback also failed");
-            // Still try to record the failed import before throwing
+        // Step 1 of failure handling: Roll back GTFS data transaction if started
+        if (transactionStarted) {
             try {
-                await recordFailedImport(connection, importId, importCreated, completedAt, stats);
-            } catch {
-                // Ignore recording errors, throw original
+                await connection.rollback();
+            } catch (rollbackErr) {
+                // Rollback failed - wrap both errors
+                const agg = new AggregateError(
+                    [err instanceof Error ? err : new Error(String(err)), rollbackErr instanceof Error ? rollbackErr : new Error(String(rollbackErr))],
+                    "Import failed and rollback also failed"
+                );
+                // Try to record failure with fresh connection, then release and rethrow
+                if (importId !== null) {
+                    const completedAt = new Date();
+                    try {
+                        await recordFailedImport(importId, completedAt, stats);
+                    } catch {
+                        // Preserve the aggregate rollback error
+                    }
+                }
+                releaseConnection();
+                throw agg;
             }
-            throw agg;
+            transactionStarted = false;
         }
 
-        // Record the failed import metadata if we created the record
-        // Use a separate connection/transaction to update after rollback
-        if (importCreated && importId !== null) {
+        // Step 2: Record failed import metadata using fresh connection (auto-commit)
+        if (importId !== null) {
+            const completedAt = new Date();
             try {
-                await recordFailedImport(connection, importId, importCreated, completedAt, stats);
-            } catch (recordErr) {
-                // Log but don't mask the original error
-                console.error("Failed to record import failure:", recordErr);
+                await recordFailedImport(importId, completedAt, stats);
+            } catch (markErr) {
+                // Don't let failure recording hide the original error
+                console.error("Failed to record import failure:", markErr);
             }
         }
 
-        // Re-throw original error
+        // Step 3: Re-throw original error
         throw err;
     } finally {
-        // Always release connection
-        connection.release();
+        // Always release connection exactly once
+        releaseConnection();
     }
-}
-
-/**
- * Record a failed import after rollback.
- * Uses the existing connection (which is now in auto-commit mode after rollback).
- */
-async function recordFailedImport(
-    connection: PoolConnection,
-    importId: number | null,
-    importCreated: boolean,
-    completedAt: Date,
-    stats: ImportStats
-): Promise<void> {
-    if (!importCreated || importId === null) {
-        return;
-    }
-
-    await markImportFailed({
-        connection,
-        importId,
-        completedAt,
-        stats,
-    });
 }
 
 /**
