@@ -85,3 +85,31 @@ export interface ErrorResponse {
   error: string;
   message: string;
 }
+
+// Trip Detail types
+export interface TripStopTimeDto {
+  stopId: string;
+  stopName: string;
+  stopSequence: number;
+  arrivalTime: string | null;
+  departureTime: string | null;
+  pickupType: number | null;
+  dropOffType: number | null;
+  stopLat: number | null;
+  stopLon: number | null;
+}
+
+export interface TripDetailDto {
+  trip: {
+    tripId: string;
+    routeId: string;
+    routeShortName: string | null;
+    routeLongName: string | null;
+    serviceId: string;
+    tripHeadsign: string | null;
+    directionId: number | null;
+    blockId: string | null;
+    shapeId: string | null;
+  };
+  stopTimes: TripStopTimeDto[];
+}

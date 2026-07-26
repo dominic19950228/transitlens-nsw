@@ -86,7 +86,11 @@ export default function RouteDetailPage({ params }: { params: Promise<{ routeId:
             )}
             {data.trips.map(t => (
               <tr key={t.tripId}>
-                <td style={{ fontFamily: "monospace", fontSize: "0.8rem" }}>{t.tripId}</td>
+                <td style={{ fontFamily: "monospace", fontSize: "0.8rem" }}>
+                  <Link href={`/trips/${encodeURIComponent(t.tripId)}`} style={{ color: "#2563eb", textDecoration: "none" }}>
+                    {t.tripId}
+                  </Link>
+                </td>
                 <td style={{ fontFamily: "monospace", fontSize: "0.8rem" }}>{t.serviceId}</td>
                 <td>{t.tripHeadsign ?? "—"}</td>
                 <td>{t.directionId === 0 ? "Outbound" : t.directionId === 1 ? "Inbound" : "—"}</td>
