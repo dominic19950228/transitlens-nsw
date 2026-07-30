@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS `gtfs_feed_imports` (
 
 CREATE TABLE IF NOT EXISTS `gtfs_agencies` (
     `feed_import_id` BIGINT UNSIGNED NOT NULL,
-    `agency_id` VARCHAR(255) NULL,
+    `agency_id` VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
     `agency_name` VARCHAR(500) NOT NULL,
     `agency_url` VARCHAR(2048) NOT NULL,
     `agency_timezone` VARCHAR(255) NOT NULL,
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS `gtfs_agencies` (
 
 CREATE TABLE IF NOT EXISTS `gtfs_stops` (
     `feed_import_id` BIGINT UNSIGNED NOT NULL,
-    `stop_id` VARCHAR(255) NOT NULL,
+    `stop_id` VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     `stop_name` VARCHAR(500) NOT NULL,
     `stop_lat` DECIMAL(10,7) NULL,
     `stop_lon` DECIMAL(10,7) NULL,
@@ -61,8 +61,8 @@ CREATE TABLE IF NOT EXISTS `gtfs_stops` (
 
 CREATE TABLE IF NOT EXISTS `gtfs_routes` (
     `feed_import_id` BIGINT UNSIGNED NOT NULL,
-    `route_id` VARCHAR(255) NOT NULL,
-    `agency_id` VARCHAR(255) NULL,
+    `route_id` VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    `agency_id` VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
     `route_short_name` VARCHAR(255) NULL,
     `route_long_name` VARCHAR(500) NULL,
     `route_type` INT UNSIGNED NOT NULL,
@@ -76,14 +76,14 @@ CREATE TABLE IF NOT EXISTS `gtfs_routes` (
 
 CREATE TABLE IF NOT EXISTS `gtfs_trips` (
     `feed_import_id` BIGINT UNSIGNED NOT NULL,
-    `route_id` VARCHAR(255) NOT NULL,
-    `service_id` VARCHAR(255) NOT NULL,
-    `trip_id` VARCHAR(255) NOT NULL,
+    `route_id` VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    `service_id` VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    `trip_id` VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     `trip_headsign` VARCHAR(500) NULL,
     `trip_short_name` VARCHAR(255) NULL,
     `direction_id` TINYINT UNSIGNED NULL,
-    `block_id` VARCHAR(255) NULL,
-    `shape_id` VARCHAR(255) NULL,
+    `block_id` VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
+    `shape_id` VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL,
     `wheelchair_accessible` TINYINT UNSIGNED NULL,
     `bikes_allowed` TINYINT UNSIGNED NULL,
     UNIQUE KEY `uq_trips_import_trip` (`feed_import_id`, `trip_id`),
@@ -98,10 +98,10 @@ CREATE TABLE IF NOT EXISTS `gtfs_trips` (
 
 CREATE TABLE IF NOT EXISTS `gtfs_stop_times` (
     `feed_import_id` BIGINT UNSIGNED NOT NULL,
-    `trip_id` VARCHAR(255) NOT NULL,
+    `trip_id` VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     `arrival_time` VARCHAR(32) NULL,
     `departure_time` VARCHAR(32) NULL,
-    `stop_id` VARCHAR(255) NOT NULL,
+    `stop_id` VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     `stop_sequence` INT UNSIGNED NOT NULL,
     `stop_headsign` VARCHAR(500) NULL,
     `pickup_type` TINYINT UNSIGNED NULL,
@@ -118,7 +118,7 @@ CREATE TABLE IF NOT EXISTS `gtfs_stop_times` (
 
 CREATE TABLE IF NOT EXISTS `gtfs_calendar` (
     `feed_import_id` BIGINT UNSIGNED NOT NULL,
-    `service_id` VARCHAR(255) NOT NULL,
+    `service_id` VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     `monday` TINYINT(1) NOT NULL,
     `tuesday` TINYINT(1) NOT NULL,
     `wednesday` TINYINT(1) NOT NULL,
@@ -137,7 +137,7 @@ CREATE TABLE IF NOT EXISTS `gtfs_calendar` (
 
 CREATE TABLE IF NOT EXISTS `gtfs_calendar_dates` (
     `feed_import_id` BIGINT UNSIGNED NOT NULL,
-    `service_id` VARCHAR(255) NOT NULL,
+    `service_id` VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     `date` CHAR(8) NOT NULL,
     `exception_type` TINYINT UNSIGNED NOT NULL,
     UNIQUE KEY `uq_calendar_dates_import` (`feed_import_id`, `service_id`, `date`),
@@ -149,7 +149,7 @@ CREATE TABLE IF NOT EXISTS `gtfs_calendar_dates` (
 
 CREATE TABLE IF NOT EXISTS `gtfs_shapes` (
     `feed_import_id` BIGINT UNSIGNED NOT NULL,
-    `shape_id` VARCHAR(255) NOT NULL,
+    `shape_id` VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     `shape_pt_lat` DECIMAL(10,7) NOT NULL,
     `shape_pt_lon` DECIMAL(10,7) NOT NULL,
     `shape_pt_sequence` INT UNSIGNED NOT NULL,
@@ -181,7 +181,7 @@ CREATE TABLE IF NOT EXISTS `gtfs_feed_info` (
 
 CREATE TABLE IF NOT EXISTS `gtfs_frequencies` (
     `feed_import_id` BIGINT UNSIGNED NOT NULL,
-    `trip_id` VARCHAR(255) NOT NULL,
+    `trip_id` VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     `start_time` VARCHAR(32) NOT NULL,
     `end_time` VARCHAR(32) NOT NULL,
     `headway_secs` INT UNSIGNED NOT NULL,
@@ -195,8 +195,8 @@ CREATE TABLE IF NOT EXISTS `gtfs_frequencies` (
 
 CREATE TABLE IF NOT EXISTS `gtfs_transfers` (
     `feed_import_id` BIGINT UNSIGNED NOT NULL,
-    `from_stop_id` VARCHAR(255) NOT NULL,
-    `to_stop_id` VARCHAR(255) NOT NULL,
+    `from_stop_id` VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
+    `to_stop_id` VARCHAR(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL,
     `transfer_type` TINYINT UNSIGNED NULL,
     `min_transfer_time` INT UNSIGNED NULL,
     KEY `idx_transfers_import_from` (`feed_import_id`, `from_stop_id`),

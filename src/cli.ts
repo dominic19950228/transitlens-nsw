@@ -12,8 +12,10 @@ import { join, extname } from "node:path";
 import { downloadGtfs } from "./download/downloadGtfs.js";
 import { extractGtfs } from "./extract/extractGtfs.js";
 import { parseGtfs, parseLatestExtraction } from "./parse/index.js";
+import { BatchConsumerError } from "./parse/parseGtfs.js";
 import { runMigrations, closeDatabasePool } from "./database/index.js";
-import { importGtfs, importGtfsLatest } from "./import/index.js";
+import { importGtfs, importGtfsLatest, ImportValidationError } from "./import/index.js";
+import { DatabaseInsertError } from "./import/batchInserters.js";
 import {
     validateDownloadEnv,
     validateExtractionEnv,
@@ -269,7 +271,35 @@ function formatError(err: Error): string {
         return `Error: HTTP error ${err.status} ${err.statusText}.`;
     }
 
-    // Generic fallback
+    // Database/import-specific errors
+    if (err instanceof DatabaseInsertError) {
+        // Extract cause message if available
+        const causeMsg = err.cause instanceof Error ? err.cause.message : String(err.cause);
+        return `Error: ${err.message}\n  Cause: ${causeMsg}`;
+    }
+    if (err instanceof BatchConsumerError) {
+        // Extract cause message if available
+        const causeMsg = err.cause instanceof Error ? err.cause.message : String(err.cause);
+        return `Error: ${err.message}\n  Cause: ${causeMsg}`;
+    }
+    if (err instanceof ImportValidationError) {
+        let msg = `Error: ${err.message}`;
+        if (err.issues && err.issues.length > 0) {
+            msg += "\nFirst issues:";
+            for (const issue of err.issues.slice(0, 3)) {
+                const fieldInfo = issue.field ? ` field=${issue.field}` : "";
+                const valueInfo = issue.value ? ` value="${issue.value}"` : "";
+                msg += `\n  ${issue.fileName}:${issue.row > 0 ? issue.row : "header"}: ${issue.message}${fieldInfo}${valueInfo}`;
+            }
+        }
+        return msg;
+    }
+
+    // Generic fallback with cause if available
+    if (err instanceof Error && "cause" in err && err.cause instanceof Error) {
+        return `Error: ${err.message}\n  Cause: ${err.cause.message}`;
+    }
+
     return `Error: ${err.message}`;
 }
 

@@ -8,9 +8,11 @@
  * - Failed import:      rollback if transaction started → mark failed (auto-commit, fresh conn) → release → rethrow
  */
 
-import { parseGtfs } from "../parse/parseGtfs.js";
+import { parseGtfs, BatchConsumerError } from "../parse/parseGtfs.js";
+import { DatabaseInsertError } from "./batchInserters.js";
 import { findLatestExtraction } from "./findLatestExtraction.js";
 import type { GtfsFileName } from "../parse/types.js";
+import type { ParseIssue } from "../parse/types.js";
 import type { ImportGtfsOptions, ImportGtfsResult, ImportStats } from "./types.js";
 import { FILE_TO_TABLE_MAPPING } from "./types.js";
 
@@ -48,18 +50,31 @@ const DEFAULT_MAX_ISSUES = 1000;
 
 /**
  * Validation error for import failures.
+ * May contain parser validation issues for diagnostic purposes.
  */
 export class ImportValidationError extends Error {
     readonly errorCount: number;
     readonly acceptedRows: number;
+    readonly issues?: readonly ParseIssue[];
 
-    constructor(message: string, errorCount: number, acceptedRows: number) {
+    constructor(
+        message: string,
+        errorCount: number,
+        acceptedRows: number,
+        issues?: readonly ParseIssue[]
+    ) {
         super(message);
         this.name = "ImportValidationError";
         this.errorCount = errorCount;
         this.acceptedRows = acceptedRows;
+        this.issues = issues;
     }
 }
+
+/**
+ * Maximum number of parse issues to include in error messages.
+ */
+const MAX_ISSUES_IN_ERROR = 5;
 
 /**
  * Validate import options.
@@ -108,15 +123,39 @@ async function checkRequiredFiles(directory: string): Promise<void> {
 }
 
 /**
+ * Format parse issues for error message.
+ */
+function formatIssuesForError(issues: readonly ParseIssue[]): string {
+    const limited = issues.slice(0, MAX_ISSUES_IN_ERROR);
+    return limited
+        .map((issue) => {
+            const parts = [`${issue.fileName}:${issue.row > 0 ? issue.row : "header"}`];
+            if (issue.field) parts.push(issue.field);
+            parts.push(issue.message);
+            return parts.join(" ");
+        })
+        .join("; ");
+}
+
+/**
  * Validate that the import succeeded before marking it complete.
  * @throws ImportValidationError if validation fails
  */
-function validateImportSuccess(stats: ImportStats): void {
+function validateImportSuccess(
+    stats: ImportStats,
+    issues?: readonly ParseIssue[]
+): void {
     if (stats.errorCount > 0) {
+        let message = `Import failed with ${stats.errorCount} error(s)`;
+        // Include first few issues for diagnostics
+        if (issues && issues.length > 0) {
+            message += `: ${formatIssuesForError(issues)}`;
+        }
         throw new ImportValidationError(
-            `Import failed with ${stats.errorCount} error(s)`,
+            message,
             stats.errorCount,
-            stats.totalAcceptedRows
+            stats.totalAcceptedRows,
+            issues ? issues.slice(0, MAX_ISSUES_IN_ERROR) : undefined
         );
     }
 
@@ -130,13 +169,30 @@ function validateImportSuccess(stats: ImportStats): void {
 }
 
 /**
+ * Extract a useful error message from caught errors.
+ */
+function extractErrorMessage(err: unknown): string | undefined {
+    if (err instanceof DatabaseInsertError) {
+        return err.message;
+    }
+    if (err instanceof BatchConsumerError) {
+        return err.message;
+    }
+    if (err instanceof Error) {
+        return err.message;
+    }
+    return undefined;
+}
+
+/**
  * Record failed import metadata using a fresh connection from the pool.
  * This is independent of the GTFS transaction connection.
  */
 async function recordFailedImport(
     importId: number,
     completedAt: Date,
-    stats: ImportStats
+    stats: ImportStats,
+    errorMessage?: string
 ): Promise<void> {
     const pool = getDatabasePool();
     const freshConnection = await pool.getConnection();
@@ -146,6 +202,7 @@ async function recordFailedImport(
             importId,
             completedAt,
             stats,
+            errorMessage,
         });
     } finally {
         freshConnection.release();
@@ -256,8 +313,8 @@ export async function importGtfs(
             batchSize: parseBatchSize,
             maxIssues,
             onBatch: async (fileName: GtfsFileName, records: readonly unknown[]): Promise<void> => {
-                // Skip unknown files
-                if (!FILE_TO_TABLE_MAPPING[fileName]) {
+                // Skip unknown files or intentionally unsupported files (e.g. shapes.txt)
+                if (!FILE_TO_TABLE_MAPPING[fileName] || fileName === "shapes.txt") {
                     return;
                 }
 
@@ -288,7 +345,8 @@ export async function importGtfs(
         stats.errorCount = parseResult.errorCount;
 
         // Step 4: Validate success conditions BEFORE modifying any state
-        validateImportSuccess(stats);
+        // Pass issues for better error messages
+        validateImportSuccess(stats, parseResult.issues);
 
         // Step 5: Deactivate previous active imports FIRST (inside transaction)
         await deactivatePreviousActiveImport(connection, importId);
@@ -327,6 +385,9 @@ export async function importGtfs(
             importedRowsByFile,
         };
     } catch (err) {
+        // Extract error message for persistence
+        const errorMessage = extractErrorMessage(err);
+
         // Step 1 of failure handling: Roll back GTFS data transaction if started
         if (transactionStarted) {
             try {
@@ -341,7 +402,7 @@ export async function importGtfs(
                 if (importId !== null) {
                     const completedAt = new Date();
                     try {
-                        await recordFailedImport(importId, completedAt, stats);
+                        await recordFailedImport(importId, completedAt, stats, errorMessage);
                     } catch {
                         // Preserve the aggregate rollback error
                     }
@@ -356,7 +417,7 @@ export async function importGtfs(
         if (importId !== null) {
             const completedAt = new Date();
             try {
-                await recordFailedImport(importId, completedAt, stats);
+                await recordFailedImport(importId, completedAt, stats, errorMessage);
             } catch (markErr) {
                 // Don't let failure recording hide the original error
                 console.error("Failed to record import failure:", markErr);

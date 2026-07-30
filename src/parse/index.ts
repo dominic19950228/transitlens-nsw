@@ -3,7 +3,7 @@
  * Step 3: Stream and validate extracted GTFS CSV files.
  */
 
-export { parseGtfs, parseLatestExtraction } from "./parseGtfs.js";
+export { parseGtfs, parseLatestExtraction, BatchConsumerError } from "./parseGtfs.js";
 
 export type {
     GtfsFileName,

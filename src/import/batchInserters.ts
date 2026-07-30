@@ -8,8 +8,31 @@ import type { GtfsFileName } from "../parse/types.js";
 import { FILE_TO_TABLE_MAPPING } from "./types.js";
 
 /**
+ * Wrapper error for database insert failures with context.
+ */
+export class DatabaseInsertError extends Error {
+    constructor(
+        public readonly fileName: string,
+        public readonly batchRowCount: number,
+        public readonly cause: unknown
+    ) {
+        const causeMessage = cause instanceof Error ? cause.message : String(cause);
+        const mysqlCode = cause instanceof Error && "code" in cause
+            ? String((cause as Error & { code: string }).code)
+            : "";
+        const codeSuffix = mysqlCode ? ` - ${mysqlCode}` : "";
+        super(
+            `Database insert failed for ${fileName} batch of ${batchRowCount} rows:${codeSuffix} ${causeMessage}`
+        );
+        this.name = "DatabaseInsertError";
+    }
+}
+
+/**
  * Insert records using parameterized multi-row query.
  * Records are chunked by insertBatchSize.
+ * 
+ * @throws DatabaseInsertError if any chunk insertion fails
  */
 export async function insertBatch(
     connection: PoolConnection,
@@ -32,8 +55,12 @@ export async function insertBatch(
     // Chunk the records
     for (let i = 0; i < records.length; i += insertBatchSize) {
         const chunk = records.slice(i, i + insertBatchSize);
-        const inserted = await insertChunk(connection, importId, table, columns, chunk);
-        totalInserted += inserted;
+        try {
+            const inserted = await insertChunk(connection, importId, table, columns, chunk);
+            totalInserted += inserted;
+        } catch (error) {
+            throw new DatabaseInsertError(fileName, chunk.length, error);
+        }
     }
 
     return totalInserted;
@@ -83,6 +110,7 @@ function snakeToCamel(str: string): string {
 /**
  * Map GTFS record values to database values.
  * Handles null mapping for optional missing fields.
+ * Keeps GTFS dates and times in original YYYYMMDD and HH:MM:SS format.
  */
 function mapValue(record: Record<string, unknown>, column: string): unknown {
     const camelKey = snakeToCamel(column);
@@ -93,12 +121,12 @@ function mapValue(record: Record<string, unknown>, column: string): unknown {
         return null;
     }
 
-    // Keep GTFS times as strings (including "25:15:00" style)
+    // Keep GTFS times as strings (including "25:15:00" style for over-24h times)
     if (column.includes("time") && typeof value === "string") {
         return value;
     }
 
-    // Keep GTFS dates as 8-character strings
+    // Keep GTFS dates unchanged (YYYYMMDD format stored as CHAR(8))
     if (column === "date" || column.endsWith("_date")) {
         return value;
     }

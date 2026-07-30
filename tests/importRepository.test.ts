@@ -6,7 +6,6 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { createPendingImport, completeImport, deactivatePreviousActiveImport, markImportFailed } from "../src/import/importRepository.js";
-import type { MarkImportFailedParams } from "../src/import/importRepository.js";
 import type { PoolConnection } from "mysql2/promise";
 import type { ImportStats } from "../src/import/types.js";
 
@@ -45,6 +44,7 @@ describe("importRepository", () => {
             expect(sql).toContain("status = 'failed'");
             expect(sql).toContain("is_active = 0");
             expect(sql).toContain("completed_at = ?");
+            expect(sql).toContain("failed_at = ?");
             expect(sql).toContain("total_processed_rows = ?");
             expect(sql).toContain("total_accepted_rows = ?");
             expect(sql).toContain("total_rejected_rows = ?");
@@ -52,14 +52,16 @@ describe("importRepository", () => {
             expect(sql).toContain("error_count = ?");
             expect(sql).toContain("WHERE id = ?");
 
-            // Verify exact parameter order
+            // Verify exact parameter order (failed_at uses same timestamp as completed_at)
             expect(params).toEqual([
+                completedAt,
                 completedAt,
                 500,
                 480,
                 20,
                 5,
                 3,
+                null, // errorMessage is optional, defaults to null
                 42,
             ]);
         });
@@ -121,6 +123,80 @@ describe("importRepository", () => {
             });
 
             expect(mockExecute).toHaveBeenCalled();
+        });
+
+        it("should include error_message = ? in generated SQL", async () => {
+            const mockExecute = vi.fn().mockResolvedValue([{ affectedRows: 1 }]);
+            const mockConn = { execute: mockExecute } as unknown as PoolConnection;
+
+            await markImportFailed({
+                connection: mockConn,
+                importId: 50,
+                completedAt: new Date(),
+                stats: {
+                    totalProcessedRows: 0,
+                    totalAcceptedRows: 0,
+                    totalRejectedRows: 0,
+                    warningCount: 0,
+                    errorCount: 0,
+                    rowsByFile: new Map(),
+                },
+            });
+
+            const sql = mockExecute.mock.calls[0][0] as string;
+            expect(sql).toContain("error_message = ?");
+        });
+
+        it("should pass error_message as a parameter when provided", async () => {
+            const mockExecute = vi.fn().mockResolvedValue([{ affectedRows: 1 }]);
+            const mockConn = { execute: mockExecute } as unknown as PoolConnection;
+
+            await markImportFailed({
+                connection: mockConn,
+                importId: 42,
+                completedAt: new Date(),
+                stats: {
+                    totalProcessedRows: 100,
+                    totalAcceptedRows: 80,
+                    totalRejectedRows: 20,
+                    warningCount: 2,
+                    errorCount: 1,
+                    rowsByFile: new Map(),
+                },
+                errorMessage: "Database insert failed for trips.txt batch of 10000 rows: ER_DATA_TOO_LONG",
+            });
+
+            const params = mockExecute.mock.calls[0][1] as unknown[];
+            // Params order: completedAt, completedAt, totalProcessedRows(100), totalAcceptedRows(80), totalRejectedRows(20), warningCount(2), errorCount(1), errorMessage, importId(42)
+            expect(params[7]).toBe("Database insert failed for trips.txt batch of 10000 rows: ER_DATA_TOO_LONG");
+            expect(params[8]).toBe(42);
+        });
+
+        it("should truncate error_message > 1000 characters to exactly 1000 ending with ...", async () => {
+            const mockExecute = vi.fn().mockResolvedValue([{ affectedRows: 1 }]);
+            const mockConn = { execute: mockExecute } as unknown as PoolConnection;
+
+            const longMessage = "x".repeat(1500);
+
+            await markImportFailed({
+                connection: mockConn,
+                importId: 42,
+                completedAt: new Date(),
+                stats: {
+                    totalProcessedRows: 0,
+                    totalAcceptedRows: 0,
+                    totalRejectedRows: 0,
+                    warningCount: 0,
+                    errorCount: 0,
+                    rowsByFile: new Map(),
+                },
+                errorMessage: longMessage,
+            });
+
+            const params = mockExecute.mock.calls[0][1] as unknown[];
+            const storedMessage = params[7] as string;
+            expect(storedMessage).toHaveLength(1000);
+            expect(storedMessage.endsWith("...")).toBe(true);
         });
     });
 

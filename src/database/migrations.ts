@@ -4,7 +4,7 @@
  */
 
 import mysql from "mysql2/promise";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { getDatabasePool } from "./pool.js";
 import { getDatabaseConfig } from "../config/env.js";
@@ -22,6 +22,19 @@ export function parseSqlStatements(sql: string): string[] {
         .map((s) => s.trim())
         .filter((s) => s.length > 0);
 }
+
+/** Directory containing incremental migration SQL files. */
+const MIGRATIONS_DIR = "database/migrations";
+
+/**
+ * Explicit allowlist of incremental migration files that are known to be safe
+ * to re-run (idempotent ALTER TABLE statements). Files not in this list are
+ * *not* executed automatically. Add new entries here after verifying the
+ * migration is safe to re-run.
+ */
+const ALLOWLISTED_MIGRATIONS = new Set([
+    "20260728-fix-id-collations.sql",
+]);
 
 const REQUIRED_TABLES = [
     "gtfs_feed_imports",
@@ -151,8 +164,32 @@ export async function runMigrations(): Promise<MigrationResult> {
             }
         }
 
-        // Run conditional nullable column migration
-        await migrateNullableColumns(connection, config.database);
+    // Run conditional nullable column migration
+    await migrateNullableColumns(connection, config.database);
+
+    // Run allowlisted incremental migration files from database/migrations/
+    const migrationsDir = join(process.cwd(), MIGRATIONS_DIR);
+    const incrementalMigrationFiles: string[] = [];
+    if (existsSync(migrationsDir)) {
+        incrementalMigrationFiles.push(
+            ...readdirSync(migrationsDir)
+                .filter((f) => ALLOWLISTED_MIGRATIONS.has(f))
+                .sort()
+        );
+    }
+    for (const file of incrementalMigrationFiles) {
+        const filePath = join(migrationsDir, file);
+        const content = readFileSync(filePath, "utf-8");
+        const statements = parseSqlStatements(content);
+        for (const statement of statements) {
+            try {
+                await connection.query(statement);
+            } catch (error: unknown) {
+                const message = error instanceof Error ? error.message : String(error);
+                throw new Error(`Migration ${file} failed: ${message}`);
+            }
+        }
+    }
     } finally {
         connection.release();
     }

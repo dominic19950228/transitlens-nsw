@@ -186,10 +186,12 @@ describe("Database migrations", () => {
     let mockConnection: any;
     let mockPool: any;
     let mockReadFileSync: any;
+    let mockReaddirSync: ReturnType<typeof vi.fn>;
 
     beforeEach(async () => {
         vi.resetModules();
         mockReadFileSync = vi.fn();
+        mockReaddirSync = vi.fn().mockReturnValue([]);
         mockConnection = {
             query: vi.fn(),
             execute: vi.fn(),
@@ -200,7 +202,9 @@ describe("Database migrations", () => {
             query: vi.fn(),
         };
         vi.doMock("node:fs", () => ({
+            existsSync: vi.fn().mockReturnValue(true),
             readFileSync: mockReadFileSync,
+            readdirSync: mockReaddirSync,
         }));
         vi.doMock("../src/database/pool.js", () => ({
             getDatabasePool: vi.fn().mockReturnValue(mockPool),
@@ -380,6 +384,81 @@ describe("Database migrations", () => {
         const { runMigrations: runMigrations2 } = await import("../src/database/migrations.js");
         
         await expect(runMigrations2()).rejects.toThrow();
+        expect(mockConnection.release).toHaveBeenCalled();
+    });
+
+    it("should execute allowlisted migration file 20260728-fix-id-collations.sql", async () => {
+        const { REQUIRED_TABLES } = await import("../src/database/migrations.js");
+        
+        // Override readdirSync to return the allowlisted file
+        const mockReaddirSync = vi.fn().mockReturnValue(["20260728-fix-id-collations.sql"]);
+        vi.doMock("node:fs", () => ({
+            existsSync: vi.fn().mockReturnValue(true),
+            readFileSync: mockReadFileSync,
+            readdirSync: mockReaddirSync,
+        }));
+        const { runMigrations: runMigrations2 } = await import("../src/database/migrations.js");
+        
+        mockReadFileSync
+            .mockReturnValueOnce("SELECT 1;")                     // schema.sql
+            .mockReturnValueOnce("SELECT 1;");                    // 20260728-fix-id-collations.sql
+        
+        mockPool.query.mockResolvedValue([REQUIRED_TABLES.map(t => ({ TABLE_NAME: t }))]);
+        mockPool.query.mockResolvedValue([[{ DEFAULT_CHARACTER_SET_NAME: "utf8mb4", DEFAULT_COLLATION_NAME: "utf8mb4_unicode_ci" }]]);
+        mockPool.query.mockResolvedValue([[{ version: "10.4.11" }]]);
+        
+        mockConnection.query.mockReset();
+        mockConnection.query
+            .mockResolvedValueOnce([{}])   // schema SELECT 1
+            .mockResolvedValueOnce([[{ IS_NULLABLE: "YES" }]])  // nullable check 1
+            .mockResolvedValueOnce([[{ IS_NULLABLE: "YES" }]])  // nullable check 2
+            .mockResolvedValueOnce([[{ IS_NULLABLE: "YES" }]])  // nullable check 3
+            .mockResolvedValueOnce([[{ IS_NULLABLE: "YES" }]])  // nullable check 4
+            .mockResolvedValueOnce([{}]);  // migration SELECT 1
+
+        await runMigrations2();
+
+        const readFileCalls = mockReadFileSync.mock.calls;
+        const collationFileCall = readFileCalls.find(
+            (call: unknown[]) => (call[0] as string).includes("20260728-fix-id-collations.sql")
+        );
+        expect(collationFileCall).toBeDefined();
+    });
+
+    it("should reject runMigrations when a migration SQL statement fails", async () => {
+        const { REQUIRED_TABLES } = await import("../src/database/migrations.js");
+        
+        // Override readdirSync to return the allowlisted file
+        const mockReaddirSync = vi.fn().mockReturnValue(["20260728-fix-id-collations.sql"]);
+        vi.doMock("node:fs", () => ({
+            existsSync: vi.fn().mockReturnValue(true),
+            readFileSync: mockReadFileSync,
+            readdirSync: mockReaddirSync,
+        }));
+        const { runMigrations: runMigrations2 } = await import("../src/database/migrations.js");
+        
+        mockReadFileSync
+            .mockReturnValueOnce("SELECT 1;")                     // schema.sql
+            .mockReturnValueOnce("ALTER TABLE nonexistent.x;");   // 20260728-fix-id-collations.sql (fails)
+        
+        // pool.query should use per-call resolves since it's called 3 times
+        mockPool.query
+            .mockResolvedValueOnce([REQUIRED_TABLES.map(t => ({ TABLE_NAME: t }))])
+            .mockResolvedValueOnce([[{ DEFAULT_CHARACTER_SET_NAME: "utf8mb4", DEFAULT_COLLATION_NAME: "utf8mb4_unicode_ci" }]])
+            .mockResolvedValueOnce([[{ version: "10.4.11" }]]);
+        
+        mockConnection.query.mockReset();
+        mockConnection.query
+            .mockResolvedValueOnce([{}])   // schema SELECT 1
+            .mockResolvedValueOnce([[{ IS_NULLABLE: "YES" }]])  // nullable check 1
+            .mockResolvedValueOnce([[{ IS_NULLABLE: "YES" }]])  // nullable check 2
+            .mockResolvedValueOnce([[{ IS_NULLABLE: "YES" }]])  // nullable check 3
+            .mockResolvedValueOnce([[{ IS_NULLABLE: "YES" }]])  // nullable check 4
+            .mockRejectedValueOnce(new Error("Table 'nsw_transit.nonexistent' doesn't exist"));  // migration ALTER
+
+        await expect(runMigrations2()).rejects.toThrow(
+            "Migration 20260728-fix-id-collations.sql failed: Table 'nsw_transit.nonexistent' doesn't exist"
+        );
         expect(mockConnection.release).toHaveBeenCalled();
     });
 });

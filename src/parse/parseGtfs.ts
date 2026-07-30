@@ -19,6 +19,24 @@ import { parseCsvFile, type BatchResult } from "./parseCsvFile.js";
 const DEFAULT_BATCH_SIZE = 10000;
 const DEFAULT_MAX_ISSUES = 1000;
 
+/**
+ * Error thrown when the batch consumer (e.g., database inserter) fails.
+ * This is distinct from parser/CSV validation errors and must propagate immediately.
+ */
+export class BatchConsumerError extends Error {
+    constructor(
+        public readonly fileName: string,
+        public readonly cause: unknown
+    ) {
+        super(
+            `Batch consumer failed for ${fileName}: ${
+                cause instanceof Error ? cause.message : String(cause)
+            }`
+        );
+        this.name = "BatchConsumerError";
+    }
+}
+
 // Deterministic processing order
 const FILE_ORDER: GtfsFileName[] = [
     "agency.txt",
@@ -121,34 +139,39 @@ async function processFile(
     let errorCount = 0;
     let localIssuesTruncated = issuesTruncated;
 
-    return new Promise<ParsedFileStats>((resolve) => {
-        parseCsvFile<ParsedRecord>(
-            filePath,
-            fileName,
-            batchSize,
-            async (batch: BatchResult<ParsedRecord>) => {
-                // Collect issues up to maxIssues
-                for (const issue of batch.issues) {
-                    if (!localIssuesTruncated && allIssues.length < maxIssues) {
-                        allIssues.push(issue);
-                    } else if (!localIssuesTruncated) {
-                        localIssuesTruncated = true;
+    return new Promise<ParsedFileStats>(async (resolve, reject) => {
+        try {
+            await parseCsvFile<ParsedRecord>(
+                filePath,
+                fileName,
+                batchSize,
+                async (batch: BatchResult<ParsedRecord>) => {
+                    // Collect issues up to maxIssues
+                    for (const issue of batch.issues) {
+                        if (!localIssuesTruncated && allIssues.length < maxIssues) {
+                            allIssues.push(issue);
+                        } else if (!localIssuesTruncated) {
+                            localIssuesTruncated = true;
+                        }
+                    }
+
+                    // Accumulate stats
+                    processedRows += batch.processedRows;
+                    acceptedRows += batch.acceptedRows;
+                    rejectedRows += batch.rejectedRows;
+                    warningCount += batch.warningCount;
+                    errorCount += batch.errorCount;
+
+                    // Deliver batch to consumer - rethrow consumer errors immediately
+                    if (batch.records.length > 0) {
+                        try {
+                            await onBatch(fileName as GtfsFileName, batch.records);
+                        } catch (error) {
+                            throw new BatchConsumerError(fileName, error);
+                        }
                     }
                 }
-
-                // Accumulate stats
-                processedRows += batch.processedRows;
-                acceptedRows += batch.acceptedRows;
-                rejectedRows += batch.rejectedRows;
-                warningCount += batch.warningCount;
-                errorCount += batch.errorCount;
-
-                // Deliver batch to consumer
-                if (batch.records.length > 0) {
-                    await onBatch(fileName as GtfsFileName, batch.records);
-                }
-            }
-        ).then(() => {
+            );
             resolve({
                 fileName,
                 processedRows,
@@ -157,13 +180,20 @@ async function processFile(
                 warningCount,
                 errorCount,
             });
-        }).catch((err: Error) => {
-            // File-level error: capture as issue, count as error
+        } catch (err: unknown) {
+            // Re-throw BatchConsumerError immediately - this is a fatal database error
+            // that must not be converted to a parser issue
+            if (err instanceof BatchConsumerError) {
+                reject(err);
+                return;
+            }
+            // File-level parser/CSV error: capture as issue, count as error
+            const errorMessage = err instanceof Error ? err.message : String(err);
             if (!localIssuesTruncated && allIssues.length < maxIssues) {
                 allIssues.push({
                     fileName,
                     row: 0,
-                    message: err ? `File processing error: ${err.message}` : "Unknown file processing error",
+                    message: errorMessage || "Unknown file processing error",
                 });
             }
             errorCount++;
@@ -175,7 +205,7 @@ async function processFile(
                 warningCount,
                 errorCount,
             });
-        });
+        }
     });
 }
 

@@ -25,6 +25,20 @@ export interface MarkImportFailedParams {
     importId: number;
     completedAt: Date;
     stats: ImportStats;
+    errorMessage?: string;
+}
+
+// Maximum length for error_message column (TEXT type can hold ~65KB, but we limit to 1000 chars)
+const MAX_ERROR_MESSAGE_LENGTH = 1000;
+
+/**
+ * Truncate error message to a safe length.
+ */
+function truncateErrorMessage(message: string): string {
+    if (message.length <= MAX_ERROR_MESSAGE_LENGTH) {
+        return message;
+    }
+    return message.slice(0, MAX_ERROR_MESSAGE_LENGTH - 3) + "...";
 }
 
 /**
@@ -89,26 +103,33 @@ export async function completeImport(params: CompleteImportParams): Promise<void
  * @throws Error if the import row is not found (affectedRows !== 1)
  */
 export async function markImportFailed(params: MarkImportFailedParams): Promise<void> {
-    const { connection, importId, completedAt, stats } = params;
+    const { connection, importId, completedAt, stats, errorMessage } = params;
+
+    // Truncate error message to safe length
+    const truncatedErrorMessage = errorMessage ? truncateErrorMessage(errorMessage) : null;
 
     const [result] = await connection.execute<ResultSetHeader>(
         `UPDATE gtfs_feed_imports 
          SET status = 'failed',
              is_active = 0,
              completed_at = ?,
+             failed_at = ?,
              total_processed_rows = ?,
              total_accepted_rows = ?,
              total_rejected_rows = ?,
              warning_count = ?,
-             error_count = ?
+             error_count = ?,
+             error_message = ?
          WHERE id = ?`,
         [
+            completedAt,
             completedAt,
             stats.totalProcessedRows,
             stats.totalAcceptedRows,
             stats.totalRejectedRows,
             stats.warningCount,
             stats.errorCount,
+            truncatedErrorMessage,
             importId,
         ]
     );

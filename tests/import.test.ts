@@ -11,7 +11,17 @@ import { parseGtfs } from "../src/parse/parseGtfs.js";
 import type { GtfsFileName } from "../src/parse/types.js";
 import type { PoolConnection } from "mysql2/promise";
 
-// Mock external modules
+// Mock BatchConsumerError class for parseGtfs mock
+const { BatchConsumerError: MockBatchConsumerError } = vi.hoisted(() => {
+    class BatchConsumerError extends Error {
+        constructor(public readonly fileName: string, public readonly cause: unknown) {
+            super(`Batch consumer failed for ${fileName}: ${cause instanceof Error ? cause.message : String(cause)}`);
+            this.name = "BatchConsumerError";
+        }
+    }
+    return { BatchConsumerError };
+});
+
 vi.mock("../src/database/pool.js", () => {
     const mockPool = {
         getConnection: vi.fn(),
@@ -24,6 +34,7 @@ vi.mock("../src/database/pool.js", () => {
 vi.mock("../src/parse/parseGtfs.js", () => {
     return {
         parseGtfs: vi.fn(),
+        BatchConsumerError: MockBatchConsumerError,
     };
 });
 
@@ -38,6 +49,7 @@ vi.mock("../src/import/importRepository.js", () => {
         deactivatePreviousActiveImport: vi.fn().mockResolvedValue(undefined),
     };
 });
+
 
 // Typed mock connection interface
 interface MockConnection {
@@ -249,6 +261,39 @@ describe("GTFS Import Unit Tests", () => {
         const querySqls = mockConnection.queries.map((q) => q.sql);
         expect(querySqls.some((s) => s.includes("INSERT INTO gtfs_agencies"))).toBe(true);
         expect(querySqls.some((s) => s.includes("INSERT INTO gtfs_stops"))).toBe(true);
+    });
+
+    // Test 3b: shapes.txt is skipped without inserting into database
+    it("3b. should skip shapes.txt batches without inserting into database", async () => {
+        (parseGtfs as ReturnType<typeof vi.fn>).mockImplementation(async (options: { onBatch: (fileName: GtfsFileName, records: readonly unknown[]) => Promise<void> }) => {
+            // Deliver batch for shapes.txt (should be ignored)
+            await options.onBatch("shapes.txt", [
+                { shapeId: "shape_1", shapePtLat: -33.8, shapePtLon: 151.2, shapePtSequence: 1 },
+                { shapeId: "shape_1", shapePtLat: -33.81, shapePtLon: 151.21, shapePtSequence: 2 },
+            ]);
+            // Also deliver a supported batch so import succeeds
+            await options.onBatch("agency.txt", [
+                { agencyId: "1", agencyName: "Agency 1", agencyUrl: "http://url", agencyTimezone: "Australia/Sydney" },
+            ]);
+            return {
+                totalProcessedRows: 3,
+                totalAcceptedRows: 3,
+                totalRejectedRows: 0,
+                warningCount: 0,
+                errorCount: 0,
+            };
+        });
+
+        await importGtfs({
+            extractedDirectory: "dummy-dir",
+        });
+
+        // Verify no INSERT INTO gtfs_shapes was executed
+        const querySqls = mockConnection.queries.map((q) => q.sql);
+        expect(querySqls.some((sql) => sql.includes("INSERT INTO gtfs_shapes"))).toBe(false);
+
+        // Verify INSERT INTO gtfs_agencies was executed
+        expect(querySqls.some((sql) => sql.includes("INSERT INTO gtfs_agencies"))).toBe(true);
     });
 
     // Test 4: a parser batch larger than the insert limit is split correctly
@@ -793,6 +838,302 @@ describe("GTFS Import Unit Tests", () => {
                 extractedDirectory: "some-file.txt",
             })
         ).rejects.toThrow("Extraction directory does not exist or is not a directory");
+    });
+});
+
+describe("GTFS Import Error Propagation Tests", () => {
+    let mockConnection: MockConnection;
+
+    beforeEach(() => {
+        vi.clearAllMocks();
+        mockConnection = createMockConnection();
+        const pool = getDatabasePool();
+        (pool.getConnection as ReturnType<typeof vi.fn>).mockResolvedValue(mockConnection);
+
+        (checkDirectoryExists as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+        (checkGtfsFileExists as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+        (readFeedManifest as ReturnType<typeof vi.fn>).mockResolvedValue({ sourceZip: { sha256: "test-sha256" } });
+        (createPendingImport as ReturnType<typeof vi.fn>).mockResolvedValue(1);
+        (markImportFailed as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+        (deactivatePreviousActiveImport as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    });
+
+    // Test 1: onBatch/insertBatch failure is rethrown immediately
+    it("1. should rethrow database insert error immediately without converting to parser issue", async () => {
+        const dbError = new Error("ER_DATA_TOO_LONG: Data too long for column 'trip_headsign'");
+        (dbError as Error & { code: string }).code = "ER_DATA_TOO_LONG";
+
+        mockConnection.query = async (sql: string) => {
+            if (sql.includes("INSERT INTO gtfs_feed_imports")) {
+                return [{ insertId: 1 }];
+            }
+            if (sql.includes("INSERT INTO gtfs_trips")) {
+                throw dbError;
+            }
+            return [{ affectedRows: 1 }];
+        };
+
+        (parseGtfs as ReturnType<typeof vi.fn>).mockImplementation(async (options: { onBatch: (fileName: GtfsFileName, records: readonly unknown[]) => Promise<void> }) => {
+            await options.onBatch("trips.txt", [
+                { routeId: "R1", serviceId: "W", tripId: "T1", tripHeadsign: "A very long headsign that exceeds the column limit" },
+            ]);
+            return {
+                totalProcessedRows: 1,
+                totalAcceptedRows: 1,
+                totalRejectedRows: 0,
+                warningCount: 0,
+                errorCount: 0, // Parser sees 0 errors
+            };
+        });
+
+        await expect(
+            importGtfs({
+                extractedDirectory: "dummy-dir",
+            })
+        ).rejects.toThrow("ER_DATA_TOO_LONG: Data too long for column 'trip_headsign'");
+
+        // The error should NOT be an ImportValidationError with parser-style errorCount
+        // It should be the original DatabaseInsertError
+    });
+
+    // Test 2: processFile does not convert consumer failure into parser errorCount
+    it("2. should not convert database error to parser errorCount", async () => {
+        const dbError = new Error("Duplicate key violation");
+        (dbError as Error & { code: string }).code = "ER_DUP_ENTRY";
+
+        mockConnection.query = async (sql: string) => {
+            if (sql.includes("INSERT INTO gtfs_feed_imports")) {
+                return [{ insertId: 1 }];
+            }
+            if (sql.includes("INSERT INTO gtfs_stops")) {
+                throw dbError;
+            }
+            return [{ affectedRows: 1 }];
+        };
+
+        (parseGtfs as ReturnType<typeof vi.fn>).mockImplementation(async (options: { onBatch: (fileName: GtfsFileName, records: readonly unknown[]) => Promise<void> }) => {
+            await options.onBatch("stops.txt", [
+                { stopId: "S1", stopName: "Stop 1", stopLat: -33.8, stopLon: 151.2 },
+            ]);
+            return {
+                totalProcessedRows: 1,
+                totalAcceptedRows: 1,
+                totalRejectedRows: 0,
+                warningCount: 0,
+                errorCount: 0, // Parser sees 0 errors - database error is separate
+            };
+        });
+
+        try {
+            await importGtfs({
+                extractedDirectory: "dummy-dir",
+            });
+            expect.fail("Should have thrown");
+        } catch (err) {
+            // The thrown error should NOT be ImportValidationError
+            expect(err).not.toBeInstanceOf(ImportValidationError);
+            expect((err as Error).message).toContain("Duplicate key violation");
+        }
+    });
+
+    // Test 3: import stops and rolls back on first database failure
+    it("3. should stop import and rollback on first database failure", async () => {
+        const dbError = new Error("Connection lost");
+        (dbError as Error & { code: string }).code = "ECONNREFUSED";
+
+        mockConnection.query = async (sql: string) => {
+            if (sql.includes("INSERT INTO gtfs_feed_imports")) {
+                return [{ insertId: 1 }];
+            }
+            if (sql.includes("INSERT INTO gtfs_agencies")) {
+                throw dbError;
+            }
+            return [{ affectedRows: 1 }];
+        };
+
+        (parseGtfs as ReturnType<typeof vi.fn>).mockImplementation(async (options: { onBatch: (fileName: GtfsFileName, records: readonly unknown[]) => Promise<void> }) => {
+            // Only deliver first batch - import should stop immediately on error
+            await options.onBatch("agency.txt", [
+                { agencyId: "A1", agencyName: "Agency 1", agencyUrl: "http://url", agencyTimezone: "Sydney" },
+            ]);
+            // This batch should never be reached
+            await options.onBatch("stops.txt", [
+                { stopId: "S1", stopName: "Stop 1", stopLat: -33.8, stopLon: 151.2 },
+            ]);
+            return {
+                totalProcessedRows: 2,
+                totalAcceptedRows: 2,
+                totalRejectedRows: 0,
+                warningCount: 0,
+                errorCount: 0,
+            };
+        });
+
+        await expect(
+            importGtfs({
+                extractedDirectory: "dummy-dir",
+            })
+        ).rejects.toThrow("Connection lost");
+
+        // Transaction should have been rolled back
+        expect(mockConnection.rollbackCalled).toBe(true);
+        expect(mockConnection.commitCalled).toBe(false);
+
+        // No INSERT INTO gtfs_stops should have been attempted
+        const stopQueries = mockConnection.queries.filter(q => q.sql.includes("INSERT INTO gtfs_stops"));
+        expect(stopQueries.length).toBe(0);
+    });
+
+    // Test 4: error message includes the GTFS file name
+    it("4. should include GTFS file name in error message", async () => {
+        const dbError = new Error("Column count mismatch");
+        mockConnection.query = async (sql: string) => {
+            if (sql.includes("INSERT INTO gtfs_feed_imports")) {
+                return [{ insertId: 1 }];
+            }
+            if (sql.includes("INSERT INTO gtfs_routes")) {
+                throw dbError;
+            }
+            return [{ affectedRows: 1 }];
+        };
+
+        (parseGtfs as ReturnType<typeof vi.fn>).mockImplementation(async (options: { onBatch: (fileName: GtfsFileName, records: readonly unknown[]) => Promise<void> }) => {
+            await options.onBatch("routes.txt", [
+                { routeId: "R1", routeShortName: "R1", routeType: 3 },
+            ]);
+            return {
+                totalProcessedRows: 1,
+                totalAcceptedRows: 1,
+                totalRejectedRows: 0,
+                warningCount: 0,
+                errorCount: 0,
+            };
+        });
+
+        try {
+            await importGtfs({
+                extractedDirectory: "dummy-dir",
+            });
+            expect.fail("Should have thrown");
+        } catch (err) {
+            // Error message should include the file name
+            expect((err as Error).message).toContain("routes.txt");
+            expect((err as Error).message).toContain("Column count mismatch");
+        }
+    });
+
+    // Test 5: markImportFailed receives and stores the error message
+    it("5. should pass error message to markImportFailed", async () => {
+        const dbError = new Error("Data truncated for column 'stop_lat'");
+        (dbError as Error & { code: string }).code = "WARN_DATA_TRUNCATED";
+
+        mockConnection.query = async (sql: string) => {
+            if (sql.includes("INSERT INTO gtfs_feed_imports")) {
+                return [{ insertId: 1 }];
+            }
+            if (sql.includes("INSERT INTO gtfs_stops")) {
+                throw dbError;
+            }
+            return [{ affectedRows: 1 }];
+        };
+
+        (parseGtfs as ReturnType<typeof vi.fn>).mockImplementation(async (options: { onBatch: (fileName: GtfsFileName, records: readonly unknown[]) => Promise<void> }) => {
+            await options.onBatch("stops.txt", [
+                { stopId: "S1", stopName: "Stop 1", stopLat: "invalid", stopLon: 151.2 },
+            ]);
+            return {
+                totalProcessedRows: 1,
+                totalAcceptedRows: 1,
+                totalRejectedRows: 0,
+                warningCount: 0,
+                errorCount: 0,
+            };
+        });
+
+        await expect(
+            importGtfs({
+                extractedDirectory: "dummy-dir",
+            })
+        ).rejects.toThrow("Data truncated");
+
+        // Verify markImportFailed was called with error message
+        expect(markImportFailed).toHaveBeenCalledWith(
+            expect.objectContaining({
+                errorMessage: expect.stringContaining("Data truncated"),
+            })
+        );
+    });
+
+    // Test 6: genuine parser validation errors still produce ImportValidationError
+    it("6. should produce ImportValidationError for genuine parser validation issues", async () => {
+        (parseGtfs as ReturnType<typeof vi.fn>).mockResolvedValue({
+            totalProcessedRows: 100,
+            totalAcceptedRows: 95,
+            totalRejectedRows: 5,
+            warningCount: 0,
+            errorCount: 2, // Parser reports 2 validation errors
+            issues: [
+                { fileName: "trips.txt", row: 42, field: "trip_id", message: "Required field missing" },
+                { fileName: "stop_times.txt", row: 100, field: "arrival_time", message: "Invalid time format" },
+            ],
+        });
+
+        try {
+            await importGtfs({
+                extractedDirectory: "dummy-dir",
+            });
+            expect.fail("Should have thrown");
+        } catch (err) {
+            expect(err).toBeInstanceOf(ImportValidationError);
+            const validationErr = err as ImportValidationError;
+            expect(validationErr.errorCount).toBe(2);
+            expect(validationErr.message).toContain("2 error(s)");
+            // Should include first issue in message
+            expect(validationErr.message).toContain("trips.txt:42");
+            expect(validationErr.message).toContain("Required field missing");
+        }
+    });
+
+    // Test 7: import stops after database failure, previous active feed remains active
+    it("7. should not change previous active feed when import fails", async () => {
+        const dbError = new Error("Lock timeout");
+        (dbError as Error & { code: string }).code = "ER_LOCK_WAIT_TIMEOUT";
+
+        mockConnection.query = async (sql: string) => {
+            if (sql.includes("INSERT INTO gtfs_feed_imports")) {
+                return [{ insertId: 1 }];
+            }
+            if (sql.includes("INSERT INTO gtfs_calendar")) {
+                throw dbError;
+            }
+            return [{ affectedRows: 1 }];
+        };
+
+        (parseGtfs as ReturnType<typeof vi.fn>).mockImplementation(async (options: { onBatch: (fileName: GtfsFileName, records: readonly unknown[]) => Promise<void> }) => {
+            await options.onBatch("agency.txt", [
+                { agencyId: "A1", agencyName: "Agency 1", agencyUrl: "http://url", agencyTimezone: "Sydney" },
+            ]);
+            await options.onBatch("calendar.txt", [
+                { serviceId: "W", monday: 1, tuesday: 1, wednesday: 1, thursday: 1, friday: 1, saturday: 0, sunday: 0, startDate: "20260101", endDate: "20261231" },
+            ]);
+            return {
+                totalProcessedRows: 2,
+                totalAcceptedRows: 2,
+                totalRejectedRows: 0,
+                warningCount: 0,
+                errorCount: 0,
+            };
+        });
+
+        await expect(
+            importGtfs({
+                extractedDirectory: "dummy-dir",
+            })
+        ).rejects.toThrow("Lock timeout");
+
+        // deactivatePreviousActiveImport should NOT have been called
+        // because the import failed before reaching that step
+        expect(deactivatePreviousActiveImport).not.toHaveBeenCalled();
     });
 });
 
