@@ -1,136 +1,253 @@
-# NSW Transit Platform
+# TransitLens NSW
 
-A Node.js and TypeScript platform for downloading, validating, extracting, and processing Transport for NSW GTFS timetable data.
+A full-stack GTFS ingestion and exploration platform for Transport for NSW timetable data.
 
-The project is being developed incrementally:
+TransitLens NSW downloads the TfNSW Complete GTFS feed, securely extracts and validates the archive, streams millions of CSV records through a bounded-memory pipeline, imports supported data into MariaDB using transactional batches, and exposes the active feed through a Next.js web application.
 
-* Step 1: Download the TfNSW Complete GTFS ZIP
-* Step 2: Safely extract and validate the GTFS archive
-* Step 3: Stream and validate GTFS CSV records
-* Step 4: Import validated GTFS data into MariaDB
-* Later: Expose APIs and build a React frontend
+## Highlights
+
+- Streams large GTFS downloads directly to disk
+- Uses atomic `.part` files and versioned SHA-256-based filenames
+- Protects ZIP extraction against path traversal, symbolic links, duplicate targets, and resource exhaustion
+- Validates GTFS files without loading the complete feed into memory
+- Imports each feed under a versioned import record
+- Activates a new feed only after the complete transaction succeeds
+- Preserves the previously active feed when a new import fails
+- Stores case-sensitive GTFS identifiers safely
+- Provides route, trip, stop, health, and import-history APIs
+- Includes a responsive React, Next.js, and Tailwind CSS frontend
+- Includes automated tests for downloader, extraction, validation, database, and formatting logic
+
+## Real TfNSW Dataset Result
+
+The pipeline has been validated against a real TfNSW Complete GTFS feed.
+
+| Dataset | Imported rows |
+|---|---:|
+| Agencies | 693 |
+| Stops | 170,582 |
+| Routes | 10,169 |
+| Trips | 192,819 |
+| Stop Times | 5,182,651 |
+| Calendar Records | 2,082 |
+| Calendar Exceptions | 27,179 |
+
+The full parser processed **20,958,332 records** with:
+
+- 20,958,332 accepted records
+- 0 rejected records
+- 0 warnings
+- 0 validation errors
+
+Database integrity checks confirmed:
+
+- no trip-to-route orphans
+- no stop-time-to-trip orphans
+- no stop-time-to-stop orphans
+- no missing trip service references
+
+The real feed also contained identifiers that differed only by letter casing. GTFS identifier columns therefore use case-sensitive binary collations.
+
+## Screenshots
+
+Add portfolio screenshots under `docs/screenshots/` before publishing the repository.
+
+Recommended files:
+
+```text
+docs/screenshots/
+├── dashboard.png
+├── routes.png
+├── route-detail.png
+├── trip-detail.png
+├── stops.png
+└── import-history.png
+```
+
+After adding the images, replace this note with:
+
+```md
+![TransitLens NSW dashboard](docs/screenshots/dashboard.png)
+![Routes browser](docs/screenshots/routes.png)
+![Route details](docs/screenshots/route-detail.png)
+![Trip details](docs/screenshots/trip-detail.png)
+```
+
+## Architecture
+
+```text
+Transport for NSW Open Data API
+              |
+              v
+     Streaming Downloader
+              |
+              v
+      Secure ZIP Extractor
+              |
+              v
+ Streaming Parser and Validator
+              |
+              v
+ Transactional MariaDB Importer
+              |
+       +------+------+
+       |             |
+       v             v
+ Next.js APIs   Next.js Frontend
+```
+
+A successful feed import is stored under a versioned import ID. A new feed becomes active only after all supported tables have been imported successfully.
 
 ## Technology
 
-* Node.js
-* TypeScript
-* Native Fetch API
-* Node.js streams
-* Vitest
-* `unzipper`
-* SHA-256 file hashing
+### Backend and data pipeline
 
-## Project Structure
+- Node.js
+- TypeScript
+- Native Fetch API
+- Node.js streams
+- MariaDB / MySQL
+- `mysql2`
+- `unzipper`
+- Zod
+- SHA-256 hashing
+- Vitest
 
-```text
-src/
-    cli.ts
+### Frontend
 
-    config/
-        env.ts
+- React
+- Next.js 16 App Router
+- TypeScript
+- Tailwind CSS v4
+- Server-only MariaDB queries
 
-    download/
-        downloadGtfs.ts
-
-    extract/
-        extractGtfs.ts
-        errors.ts
-        manifest.ts
-        pathSafety.ts
-        index.ts
-
-    utils/
-        fileHash.ts
-
-tests/
-    downloadGtfs.test.ts
-    extractGtfs.test.ts
-```
-
-The exact structure may change as later stages are added.
-
----
-
-# Step 1: TfNSW Complete GTFS Downloader
-
-Step 1 downloads the TfNSW Complete GTFS feed without loading the complete ZIP file into memory.
-
-## Features
-
-* Streams the API response directly to disk
-* Reads the TfNSW API token from environment variables
-* Supports configurable request timeout
-* Writes downloads to a temporary `.part` file
-* Checks the downloaded ZIP signature
-* Calculates a SHA-256 hash
-* Generates a versioned filename
-* Atomically renames the completed download
-* Removes incomplete temporary files after failure
-* Preserves previous successful downloads
-* Returns typed download metadata
-* Provides safe CLI errors
-* Includes automated tests
-
-## TfNSW Endpoint
+## High-Level Project Structure
 
 ```text
-https://api.transport.nsw.gov.au/v1/publictransport/timetables/complete/gtfs
+.
+├── src/
+│   ├── cli.ts
+│   ├── config/
+│   ├── download/
+│   ├── extract/
+│   ├── parser/
+│   ├── database/
+│   └── import/
+├── database/
+│   ├── schema.sql
+│   └── migrations/
+├── tests/
+├── web/
+│   ├── app/
+│   ├── lib/
+│   └── types/
+├── env.example
+├── package.json
+└── README.md
 ```
 
-The request uses:
+The exact internal file layout may evolve, but the pipeline remains separated into downloading, extraction, validation, persistence, and presentation layers.
 
-```http
-Authorization: apikey <TFNSW_API_TOKEN>
-Accept: application/zip
-```
+## Pipeline
 
-The API token must never be stored in source code or committed to Git.
+### 1. Streaming Download
 
-## Download Output
+The downloader retrieves the TfNSW Complete GTFS ZIP without loading the complete response into memory.
 
-Downloaded files use a versioned filename:
+It:
+
+- reads the API token from environment variables
+- streams the response directly to disk
+- writes to a temporary `.part` file
+- validates the ZIP signature
+- calculates a SHA-256 hash
+- creates a versioned filename
+- atomically renames the completed download
+- removes incomplete files after failures
+- preserves previous successful downloads
+
+Downloaded files use this format:
 
 ```text
 tfnsw-complete-gtfs-YYYYMMDDTHHmmssZ-<sha256-prefix>.zip
 ```
 
-Example:
+### 2. Secure ZIP Extraction
+
+The extractor writes archive entries into an isolated temporary directory and finalises the directory only after validation succeeds.
+
+It rejects:
+
+- `../` and `..\` traversal paths
+- absolute Unix paths
+- Windows drive paths
+- UNC paths
+- null bytes
+- symbolic links
+- entries escaping the extraction root
+- duplicate normalised GTFS filenames
+- configured archive, file-size, or total-size limit violations
+
+Recognised GTFS filenames are matched case-insensitively and normalised to lowercase root-level names.
+
+For example:
 
 ```text
-tfnsw-complete-gtfs-20260718T031500Z-a1b2c3d4e5f6.zip
+wrapper/STOPS.TXT
 ```
 
-Temporary downloads use the `.part` extension and are removed if the download fails.
+becomes:
 
----
+```text
+stops.txt
+```
 
-# Step 2: Secure GTFS ZIP Extraction
+### 3. Streaming Validation
 
-Step 2 extracts a completed GTFS ZIP into an isolated, versioned directory.
+The parser processes GTFS CSV files in bounded batches rather than retaining the entire dataset in memory.
 
-It validates the archive structure before making the extracted feed available.
+Validation includes:
 
-## Features
+- required headers
+- required values
+- strict numeric parsing
+- latitude and longitude ranges
+- GTFS dates
+- GTFS times, including values greater than 24 hours
+- enumerated GTFS fields
+- limited issue sampling
+- processed, accepted, rejected, warning, and error statistics
 
-* Streams ZIP entries to disk
-* Uses an isolated temporary extraction directory
-* Protects against unsafe archive paths
-* Rejects symbolic links
-* Rejects duplicate normalized GTFS filenames
-* Validates required GTFS files
-* Enforces archive resource limits
-* Calculates SHA-256 hashes for extracted files
-* Generates `feed-manifest.json`
-* Atomically finalises the extraction directory
-* Cleans incomplete extraction directories after failure
-* Preserves the source ZIP
-* Preserves previous successful extractions
-* Supports idempotent extraction
-* Includes automated tests
+### 4. Transactional Import
 
-## Required GTFS Files
+Validated records are imported into MariaDB using batched inserts inside a transaction.
 
-The following files are required:
+The importer:
+
+- creates a versioned feed import record
+- writes supported GTFS tables in dependency order
+- rolls back the complete transaction when an insert fails
+- records failed import details
+- preserves the previously active feed
+- marks the new feed active only after successful completion
+- stores a shortened diagnostic message for failed imports
+
+### 5. Web Exploration
+
+The Next.js application reads the currently active feed and exposes:
+
+- feed statistics
+- route search and pagination
+- route details and trips
+- trip details and ordered stops
+- stop search and pagination
+- stop details and stop times
+- import history
+- health and data APIs
+
+## GTFS Files
+
+### Required files
 
 ```text
 agency.txt
@@ -140,7 +257,7 @@ trips.txt
 stop_times.txt
 ```
 
-At least one of these service calendar files must also exist:
+At least one service calendar file must also exist:
 
 ```text
 calendar.txt
@@ -149,9 +266,7 @@ calendar_dates.txt
 
 Both may be present.
 
-## Optional GTFS Files
-
-Optional files may include:
+### Recognised optional files
 
 ```text
 shapes.txt
@@ -168,464 +283,67 @@ fare_rules.txt
 
 Missing optional files do not cause extraction failure.
 
-## Extraction Output
+## Feed Manifest
 
-Example directory structure:
-
-```text
-data/
-    gtfs/
-        tfnsw-complete-gtfs-20260718T031500Z-a1b2c3d4e5f6.zip
-
-        extracted/
-            tfnsw-complete-gtfs-20260718T031500Z-a1b2c3d4e5f6/
-                agency.txt
-                stops.txt
-                routes.txt
-                trips.txt
-                stop_times.txt
-                calendar.txt
-                shapes.txt
-                feed-manifest.json
-```
-
-Extraction initially occurs inside a temporary sibling directory:
-
-```text
-.tfnsw-complete-gtfs-20260718T031500Z-a1b2c3d4e5f6.part/
-```
-
-The temporary directory is renamed only after all extraction and validation steps succeed.
-
-## Archive Security
-
-The extractor rejects archive entries containing:
-
-```text
-../
-..\
-absolute Unix paths
-Windows drive paths
-UNC paths
-null bytes
-symbolic links
-paths escaping the extraction root
-```
-
-Recognised GTFS filenames are matched case-insensitively and normalised to lowercase root-level output names.
-
-For example:
-
-```text
-wrapper/STOPS.TXT
-```
-
-is extracted as:
-
-```text
-stops.txt
-```
-
-If multiple archive entries resolve to the same normalised GTFS filename, extraction fails instead of overwriting a file.
-
-## Resource Limits
-
-The extractor supports configurable limits for:
-
-* Maximum archive entries
-* Maximum individual uncompressed file size
-* Maximum total uncompressed size
-
-Limits are checked using declared uncompressed sizes where available and actual bytes written during extraction.
-
----
-
-# Feed Manifest
-
-Each completed extraction includes:
+Each completed extraction contains:
 
 ```text
 feed-manifest.json
 ```
 
-The manifest records information about the source ZIP and extracted GTFS files.
+The manifest records:
 
-Example structure:
+- source ZIP filename, path, size, and SHA-256
+- extraction timestamp
+- extraction directory
+- required and optional files
+- missing required files
+- extracted file sizes and SHA-256 hashes
+- total file count
+- total uncompressed bytes
 
-```json
-{
-    "schemaVersion": 1,
-    "sourceZip": {
-        "fileName": "tfnsw-complete-gtfs-20260718T031500Z-a1b2c3d4e5f6.zip",
-        "filePath": "data/gtfs/tfnsw-complete-gtfs-20260718T031500Z-a1b2c3d4e5f6.zip",
-        "sizeBytes": 283912341,
-        "sha256": "full-source-zip-sha256"
-    },
-    "extractedAt": "2026-07-18T03:20:00.000Z",
-    "extractionDirectory": "data/gtfs/extracted/tfnsw-complete-gtfs-20260718T031500Z-a1b2c3d4e5f6",
-    "requiredFiles": [
-        "agency.txt",
-        "stops.txt",
-        "routes.txt",
-        "trips.txt",
-        "stop_times.txt"
-    ],
-    "optionalFiles": [
-        "calendar.txt",
-        "calendar_dates.txt",
-        "shapes.txt"
-    ],
-    "missingRequiredFiles": [],
-    "files": [
-        {
-            "fileName": "agency.txt",
-            "relativePath": "agency.txt",
-            "sizeBytes": 1234,
-            "sha256": "file-sha256"
-        }
-    ],
-    "totalFiles": 8,
-    "totalUncompressedBytes": 1234567890
-}
-```
+The manifest does not contain API tokens.
 
-The manifest does not contain API tokens or temporary directory paths.
+## Requirements
 
----
+- Node.js 20 or later
+- npm
+- MariaDB or MySQL
+- A Transport for NSW Open Data API token for download commands
+- XAMPP is suitable for local Windows development
 
-# Environment Setup
+Apache is not required for the Node.js database connection.
 
-Create a local environment file:
+## Environment Setup
+
+Create a local environment file from the example:
+
+### macOS or Linux
 
 ```bash
 cp env.example .env
 ```
 
-On Windows PowerShell:
+### Windows PowerShell
 
 ```powershell
 Copy-Item env.example .env
 ```
 
-Add your TfNSW API token:
+Configure the root application:
 
 ```env
 TFNSW_API_TOKEN=your_api_token_here
-```
-
-Available environment variables:
-
-```env
-TFNSW_API_TOKEN=your_api_token_here
-
 TFNSW_GTFS_URL=https://api.transport.nsw.gov.au/v1/publictransport/timetables/complete/gtfs
 
 GTFS_DOWNLOAD_DIR=./data/gtfs
-
 GTFS_DOWNLOAD_TIMEOUT_MS=600000
-
 GTFS_EXTRACTION_DIR=./data/gtfs/extracted
 
 GTFS_MAX_ARCHIVE_ENTRIES=1000
-
 GTFS_MAX_SINGLE_FILE_BYTES=10737418240
-
 GTFS_MAX_TOTAL_UNCOMPRESSED_BYTES=21474836480
-```
 
-`TFNSW_API_TOKEN` is required only for download commands.
-
-Extraction commands do not require an API token.
-
----
-
-# Installation
-
-```bash
-npm install
-```
-
----
-
-# Commands
-
-## Type Check
-
-```bash
-npm run typecheck
-```
-
-## Run Tests
-
-```bash
-npm test
-```
-
-## Watch Tests
-
-```bash
-npm run test:watch
-```
-
-## Download GTFS
-
-```bash
-npm run gtfs:download
-```
-
-Expected output:
-
-```text
-GTFS download completed
-File: data/gtfs/tfnsw-complete-gtfs-20260718T031500Z-a1b2c3d4e5f6.zip
-Size: 283,912,341 bytes
-SHA-256: a1b2c3d4e5f6...
-Downloaded at: 2026-07-18T03:15:00.000Z
-```
-
-## Extract a Specific ZIP
-
-```bash
-npm run gtfs:extract -- ./data/gtfs/tfnsw-complete-gtfs-20260718T031500Z-a1b2c3d4e5f6.zip
-```
-
-Expected output:
-
-```text
-GTFS extraction completed
-Source: data/gtfs/tfnsw-complete-gtfs-20260718T031500Z-a1b2c3d4e5f6.zip
-Directory: data/gtfs/extracted/tfnsw-complete-gtfs-20260718T031500Z-a1b2c3d4e5f6
-Files: 8
-Uncompressed size: 1,234,567,890 bytes
-Manifest: data/gtfs/extracted/tfnsw-complete-gtfs-20260718T031500Z-a1b2c3d4e5f6/feed-manifest.json
-```
-
-## Extract the Latest Download
-
-```bash
-npm run gtfs:extract:latest
-```
-
-The command:
-
-1. Scans the configured GTFS download directory.
-2. Considers only completed `.zip` files.
-3. Ignores `.part` files.
-4. Selects the newest ZIP by modification time.
-5. Extracts and validates the selected feed.
-
----
-
-# Command-Specific Configuration
-
-Configuration validation is command-specific.
-
-## Download
-
-Requires:
-
-```env
-TFNSW_API_TOKEN
-```
-
-Uses:
-
-```env
-TFNSW_GTFS_URL
-GTFS_DOWNLOAD_DIR
-GTFS_DOWNLOAD_TIMEOUT_MS
-```
-
-## Extract
-
-Does not require:
-
-```env
-TFNSW_API_TOKEN
-```
-
-Uses:
-
-```env
-GTFS_DOWNLOAD_DIR
-GTFS_EXTRACTION_DIR
-GTFS_MAX_ARCHIVE_ENTRIES
-GTFS_MAX_SINGLE_FILE_BYTES
-GTFS_MAX_TOTAL_UNCOMPRESSED_BYTES
-```
-
----
-
-# Error Handling
-
-The downloader provides errors for cases such as:
-
-* Missing API token
-* Invalid URL
-* Request timeout
-* Network failure
-* HTTP 401 or 403
-* Unexpected response type
-* Invalid ZIP signature
-* Disk write failure
-* Hashing failure
-* Atomic rename failure
-
-The extractor provides errors for cases such as:
-
-* Source ZIP not found
-* Invalid ZIP archive
-* Unsafe archive path
-* Symbolic-link entry
-* Duplicate GTFS filename
-* Missing required GTFS file
-* Missing service calendar
-* Archive entry limit exceeded
-* File size limit exceeded
-* Total extraction size exceeded
-* File write failure
-* Manifest write failure
-* Extraction directory conflict
-* Atomic finalisation failure
-
-CLI errors are designed to avoid exposing API tokens or unnecessary internal details.
-
----
-
-# Testing
-
-Tests must not call the production TfNSW API.
-
-The test suite uses mocked HTTP responses, local HTTP test servers, temporary directories, and small generated ZIP fixtures.
-
-Step 1 tests cover:
-
-* Successful streaming download
-* Authorization header
-* Missing token
-* HTTP errors
-* HTML or JSON error responses
-* Invalid ZIP content
-* Timeout handling
-* Temporary file cleanup
-* SHA-256 calculation
-* Versioned filename generation
-* Existing download preservation
-
-Step 2 tests cover:
-
-* Successful extraction
-* Wrapper directories
-* Uppercase filenames
-* Required GTFS files
-* Calendar alternatives
-* Duplicate filenames
-* Unsafe paths
-* Symbolic links
-* Archive limits
-* Cleanup after failure
-* Manifest generation
-* Hash verification
-* Stable manifest ordering
-* Atomic finalisation
-* Idempotent extraction
-* Latest ZIP selection
-
----
-
-# Git Security
-
-The following files and directories must not be committed:
-
-```text
-.env
-data/gtfs/*.zip
-data/gtfs/*.part
-data/gtfs/extracted/
-data/test-gtfs/
-coverage/
-```
-
-Never commit:
-
-* TfNSW API tokens
-* Downloaded GTFS archives
-* Extracted GTFS files
-* Personal Continue configurations
-* Private LAN addresses
-* Local model configuration
-
----
-
-# Current Limitations
-
-Step 1 validates only the downloaded ZIP container.
-
-Step 2 validates:
-
-* Archive structure
-* Archive path safety
-* Resource limits
-* Required GTFS filenames
-* Extracted file hashes
-
-Step 2 does not validate:
-
-* CSV headers
-* CSV field types
-* Required row values
-* GTFS time formats
-* GTFS date formats
-* Foreign-key relationships
-* Service calendar logic
-* Route or stop consistency
-
-Those checks belong to Step 3.
-
----
-
-# Next Step
-
-## Step 3: Streaming GTFS CSV Validation
-
-The next stage will:
-
-* Stream CSV records without retaining the full feed in memory
-* Validate required headers
-* Validate required fields
-* Validate strict numeric values
-* Validate latitude and longitude
-* Validate GTFS dates
-* Validate GTFS times greater than 24 hours
-* Validate enumerated GTFS fields
-* Process records in bounded batches
-* Return validation statistics and limited issue samples
-
-Step 3 will not persist records.
-
-GTFS batch import will be implemented in a later step.
-
----
-
-# Step 4: Local MariaDB Setup
-
-Step 4A connects the Node.js application to a local XAMPP MariaDB database.
-
-## Requirements
-
-* XAMPP with MySQL/MariaDB running
-* Apache is not required for the Node.js database connection
-
-## Database Setup
-
-1. Start MySQL in XAMPP.
-2. Confirm the `nsw_transit` database exists.
-3. Configure the following environment variables.
-4. Run the migration command.
-
-## Database Environment Variables
-
-```env
 DB_HOST=127.0.0.1
 DB_PORT=3306
 DB_USER=root
@@ -634,71 +352,119 @@ DB_NAME=nsw_transit
 DB_CONNECTION_LIMIT=5
 ```
 
-An empty `DB_PASSWORD` is valid.
+`TFNSW_API_TOKEN` is required only for download commands.
 
-## Run Database Migration
+An empty `DB_PASSWORD` is valid for a default local XAMPP installation, but a password should be used in any shared or hosted environment.
+
+## Installation
+
+Install the root application:
+
+```bash
+npm install
+```
+
+Install the web application:
+
+```bash
+cd web
+npm install
+```
+
+## Database Setup
+
+1. Start MariaDB or MySQL.
+2. Create the database:
+
+```sql
+CREATE DATABASE nsw_transit
+  CHARACTER SET utf8mb4
+  COLLATE utf8mb4_unicode_ci;
+```
+
+3. Configure the database environment variables.
+4. Run the migration command:
 
 ```bash
 npm run db:migrate
 ```
 
-Expected output:
+The schema contains these GTFS tables:
 
 ```text
-Database migration completed
-Database: nsw_transit
-Server: MariaDB 10.4.11
-Character set: utf8mb4
-Collation: utf8mb4_unicode_ci
-Tables verified: 12
+gtfs_feed_imports
+gtfs_agencies
+gtfs_stops
+gtfs_routes
+gtfs_trips
+gtfs_stop_times
+gtfs_calendar
+gtfs_calendar_dates
+gtfs_shapes
+gtfs_feed_info
+gtfs_frequencies
+gtfs_transfers
 ```
 
-## Database Tables
+GTFS identifier columns use case-sensitive collations where necessary.
 
-The schema includes these 12 GTFS tables:
+## Commands
 
-* gtfs_feed_imports
-* gtfs_agencies
-* gtfs_stops
-* gtfs_routes
-* gtfs_trips
-* gtfs_stop_times
-* gtfs_calendar
-* gtfs_calendar_dates
-* gtfs_shapes
-* gtfs_feed_info
-* gtfs_frequencies
-* gtfs_transfers
-
----
-
-# Web Frontend
-
-The `web/` directory contains a Next.js application providing a user interface for browsing imported GTFS data.
-
-## Technology
-
-* Next.js 16 (App Router)
-* TypeScript
-* Server-only database queries via `server-only`
-* MariaDB via `mysql2`
-* Tailwind CSS v4
-
-## Getting Started
+### Type check
 
 ```bash
-cd web
-npm install
-npm run dev
+npm run typecheck
 ```
 
-Then open [http://localhost:3000](http://localhost:3000).
+### Run tests
 
-The web application requires the database to be running and populated with GTFS import data.
+```bash
+npm test
+```
 
-## Environment Variables
+### Watch tests
 
-The web app shares the same `.env` file as the main application. Ensure the following database variables are set:
+```bash
+npm run test:watch
+```
+
+### Download the TfNSW feed
+
+```bash
+npm run gtfs:download
+```
+
+### Extract a specific ZIP
+
+```bash
+npm run gtfs:extract -- ./data/gtfs/<feed-file>.zip
+```
+
+### Extract the latest completed download
+
+```bash
+npm run gtfs:extract:latest
+```
+
+### Run database migrations
+
+```bash
+npm run db:migrate
+```
+
+Run this command to view all currently available validation and import scripts:
+
+```bash
+npm run
+```
+
+The CLI provides command-specific configuration checks, so extraction and database operations do not require a TfNSW API token.
+
+## Web Application
+
+The frontend is located under `web/`.
+
+Create `web/.env.local`:
 
 ```env
 DB_HOST=127.0.0.1
@@ -708,25 +474,174 @@ DB_PASSWORD=
 DB_NAME=nsw_transit
 ```
 
-## Pages
+Start the development server:
+
+```bash
+cd web
+npm run dev
+```
+
+Open:
+
+```text
+http://localhost:3000
+```
+
+The web application requires the database to be running with a completed active feed import.
+
+### Pages
 
 | Path | Description |
-|------|-------------|
-| `/` | Dashboard — shows latest active feed statistics |
+|---|---|
+| `/` | Dashboard with active-feed statistics |
 | `/routes` | Paginated route list with search |
-| `/routes/[routeId]` | Route detail with trip list |
+| `/routes/[routeId]` | Route details and associated trips |
+| `/trips/[tripId]` | Trip details and ordered stop sequence |
 | `/stops` | Paginated stop list with search |
-| `/stops/[stopId]` | Stop detail with stop times |
-| `/imports` | Import history table |
+| `/stops/[stopId]` | Stop details and associated stop times |
+| `/imports` | Feed import history |
 
-## API Endpoints
+### API Endpoints
 
 | Endpoint | Method | Description |
-|----------|--------|-------------|
+|---|---|---|
 | `/api/health` | GET | Database health check |
-| `/api/imports` | GET | All feed imports |
+| `/api/imports` | GET | Feed import history |
 | `/api/imports/active` | GET | Currently active feed |
-| `/api/routes` | GET | Paginated routes (query: `search`, `limit`, `offset`) |
-| `/api/routes/[routeId]` | GET | Route detail with trips |
-| `/api/stops` | GET | Paginated stops (query: `search`, `limit`, `offset`) |
-| `/api/stops/[stopId]` | GET | Stop detail with stop times |
+| `/api/routes` | GET | Paginated routes using `search`, `limit`, and `offset` |
+| `/api/routes/[routeId]` | GET | Route details with trips |
+| `/api/trips/[tripId]` | GET | Trip details with ordered stop times |
+| `/api/stops` | GET | Paginated stops using `search`, `limit`, and `offset` |
+| `/api/stops/[stopId]` | GET | Stop details with stop times |
+
+## Testing
+
+Tests do not call the production TfNSW API.
+
+The test suite uses:
+
+- mocked HTTP responses
+- local HTTP test servers
+- temporary directories
+- generated ZIP fixtures
+- small GTFS fixtures
+- database configuration mocks
+- focused formatting and API helper tests
+
+Coverage includes:
+
+- successful streaming downloads
+- authentication headers
+- missing and invalid tokens
+- timeout and network failures
+- invalid ZIP responses
+- temporary file cleanup
+- SHA-256 generation
+- unsafe extraction paths
+- symbolic links
+- duplicate filenames
+- archive resource limits
+- manifest generation
+- required GTFS files
+- CSV and field validation
+- transactional import behavior
+- failed import diagnostics
+- case-sensitive GTFS identifiers
+- frontend formatting helpers
+
+## Engineering Decisions
+
+### Streaming instead of full-file loading
+
+The production TfNSW feed contains millions of records. Downloads, extraction, parsing, and importing therefore use streams and bounded batches to control memory usage.
+
+### Atomic filesystem operations
+
+Downloads and extractions are first written to temporary `.part` locations. They become visible as completed artifacts only after validation succeeds.
+
+### Transactional feed activation
+
+A feed is marked active only after all supported data has been imported successfully. A failed import cannot replace the previously active feed.
+
+### Case-sensitive GTFS identifiers
+
+The real TfNSW dataset contains identifiers that differ only by letter casing. Relevant database columns therefore use binary collations.
+
+### Defensive archive handling
+
+ZIP entry names are normalised and validated before any file is written. Unsafe paths, symbolic links, duplicate targets, and configured resource-limit violations are rejected.
+
+### Safe diagnostics
+
+CLI and database failure messages provide useful context without including API tokens or unnecessary internal details.
+
+## Security and Repository Hygiene
+
+The following files and directories must not be committed:
+
+```text
+.env
+web/.env.local
+data/gtfs/*.zip
+data/gtfs/*.part
+data/gtfs/extracted/
+data/test-gtfs/
+coverage/
+.next/
+web/.next/
+node_modules/
+web/node_modules/
+```
+
+Never commit:
+
+- TfNSW API tokens
+- real database passwords
+- downloaded GTFS archives
+- extracted production GTFS files
+- database dumps containing imported data
+- private keys or certificates
+- private LAN addresses
+- company-internal source code or data
+
+SQL schema and migration files are intentionally tracked because they define the application database structure.
+
+## Current Limitations
+
+- The project currently uses static GTFS timetable data, not GTFS-Realtime.
+- Shape records are parsed but are intentionally skipped by the current database import path.
+- `pathways.txt` and `levels.txt` may be extracted but are not currently persisted.
+- The web interface is designed for data exploration rather than journey planning.
+- The project does not include authentication or multi-user access control.
+- The complete TfNSW feed is not included in the repository.
+- Production deployment and managed database configuration are outside the current portfolio scope.
+
+## Data Attribution
+
+This project uses public transport timetable data provided by Transport for NSW through the Transport Open Data Hub.
+
+The production GTFS dataset is not distributed with this repository. Users must obtain their own TfNSW API credentials and download the feed using the provided CLI.
+
+Transport for NSW data remains subject to its applicable data licence and attribution requirements.
+
+## License
+
+No source-code licence is included by default.
+
+Before publishing this repository as an open-source project, add a `LICENSE` file. The MIT License is a suitable choice for a portfolio project that permits reuse while preserving attribution and copyright notices.
+
+## Portfolio Focus
+
+TransitLens NSW demonstrates:
+
+- large-file streaming
+- secure archive processing
+- typed validation
+- transactional database imports
+- schema migration design
+- production-size data handling
+- defensive error handling
+- REST-style APIs
+- React and Next.js frontend development
+- Tailwind CSS UI styling
+- automated testing
