@@ -38,3 +38,4 @@ coverage/
 
 web/.next
 *.tsbuildinfo
+web\next-env.d.ts

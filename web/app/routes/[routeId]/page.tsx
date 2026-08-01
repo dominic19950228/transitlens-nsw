@@ -31,7 +31,7 @@ export default function RouteDetailPage({ params }: { params: Promise<{ routeId:
           {error.error === "NO_ACTIVE_FEED" ? "No Active Feed" : "Not Found"}
         </h2>
         <p style={{ color: "#64748b" }}>{error.message}</p>
-        <Link href="/routes" className="btn btn-outline" style={{ marginTop: "1rem" }}>Back to Routes</Link>
+        <Link href="/routes" className="inline-flex items-center px-4 py-2 rounded-md border border-border bg-white text-primary font-medium text-sm hover:bg-surface transition-colors" style={{ marginTop: "1rem" }}>Back to Routes</Link>
       </div>
     );
   }
@@ -48,18 +48,18 @@ export default function RouteDetailPage({ params }: { params: Promise<{ routeId:
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginBottom: "1.5rem" }}>
-        <Link href="/routes" className="btn btn-outline" style={{ padding: "0.25rem 0.75rem", fontSize: "0.8rem" }}>&larr; Back</Link>
+        <Link href="/routes" className="inline-flex items-center px-3 py-1.5 rounded-md border border-border bg-white text-primary font-medium text-xs hover:bg-surface transition-colors">&larr; Back</Link>
         <h1 style={{ fontSize: "1.5rem", fontWeight: 700 }}>Route {route.routeShortName ?? route.routeId}</h1>
       </div>
 
-      <div className="card" style={{ marginBottom: "1.5rem" }}>
+      <div className="bg-white rounded-lg shadow-sm border border-border p-4" style={{ marginBottom: "1.5rem" }}>
         <h2 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "1rem" }}>Route Details</h2>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "1rem" }}>
           {[
-            ["Short Name", route.routeShortName ?? "—"],
-            ["Long Name", route.routeLongName ?? "—"],
+            ["Short Name", route.routeShortName ?? "N/A"],
+            ["Long Name", route.routeLongName ?? "N/A"],
             ["Type", routeTypeName(route.routeType)],
-            ["Agency", route.agencyId ?? "—"],
+            ["Agency", route.agencyId ?? "N/A"],
             ["Route ID", route.routeId],
           ].map(([label, value]) => (
             <div key={String(label)}>
@@ -70,32 +70,37 @@ export default function RouteDetailPage({ params }: { params: Promise<{ routeId:
         </div>
       </div>
 
-      <div className="card" style={{ padding: 0, overflowX: "auto" }}>
+      <div className="bg-white rounded-lg shadow-sm border border-border" style={{ overflowX: "auto" }}>
         <h2 style={{ fontSize: "1rem", fontWeight: 600, padding: "1rem 1rem 0.5rem" }}>
           Trips ({data.trips.length.toLocaleString()})
         </h2>
-        <table>
-          <thead>
+        <table className="w-full border-collapse text-sm">
+          <thead className="bg-slate-100">
             <tr>
-              <th>Trip ID</th><th>Service ID</th><th>Headsign</th><th>Direction</th><th>Block</th><th>Shape</th>
+              <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Trip ID</th>
+              <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Service ID</th>
+              <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Headsign</th>
+              <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Direction</th>
+              <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Block</th>
+              <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Shape</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody className="divide-y divide-slate-200">
             {data.trips.length === 0 && (
-              <tr><td colSpan={6} style={{ textAlign: "center", color: "#64748b", padding: "2rem" }}>No trips found.</td></tr>
+              <tr><td colSpan={6} className="text-center text-muted px-3 py-8">No trips found.</td></tr>
             )}
             {data.trips.map(t => (
-              <tr key={t.tripId}>
-                <td style={{ fontFamily: "monospace", fontSize: "0.8rem" }}>
-                  <Link href={`/trips/${encodeURIComponent(t.tripId)}`} style={{ color: "#2563eb", textDecoration: "none" }}>
+              <tr key={t.tripId} className="hover:bg-slate-50">
+                <td className="px-3 py-2 font-mono text-xs">
+                  <Link href={`/trips/${encodeURIComponent(t.tripId)}`} className="text-accent hover:underline">
                     {t.tripId}
                   </Link>
                 </td>
-                <td style={{ fontFamily: "monospace", fontSize: "0.8rem" }}>{t.serviceId}</td>
-                <td>{t.tripHeadsign ?? "—"}</td>
-                <td>{t.directionId === 0 ? "Outbound" : t.directionId === 1 ? "Inbound" : "—"}</td>
-                <td style={{ fontFamily: "monospace", fontSize: "0.8rem" }}>{t.blockId ?? "—"}</td>
-                <td style={{ fontFamily: "monospace", fontSize: "0.8rem" }}>{t.shapeId ?? "—"}</td>
+                <td className="px-3 py-2 font-mono text-xs">{t.serviceId}</td>
+                <td className="px-3 py-2">{t.tripHeadsign ?? "N/A"}</td>
+                <td className="px-3 py-2">{t.directionId === 0 ? "Outbound" : t.directionId === 1 ? "Inbound" : "N/A"}</td>
+                <td className="px-3 py-2 font-mono text-xs">{t.blockId ?? "N/A"}</td>
+                <td className="px-3 py-2 font-mono text-xs">{t.shapeId ?? "N/A"}</td>
               </tr>
             ))}
           </tbody>

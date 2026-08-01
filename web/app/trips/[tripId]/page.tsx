@@ -47,7 +47,7 @@ export default function TripDetailPage({ params }: { params: Promise<{ tripId: s
               : "Unable to Load Trip"}
         </h2>
         <p style={{ color: "#64748b" }}>{error.message}</p>
-        <Link href="/routes" className="btn btn-outline" style={{ marginTop: "1rem" }}>Back to Routes</Link>
+        <Link href="/routes" className="inline-flex items-center px-4 py-2 rounded-md border border-border bg-white text-primary font-medium text-sm hover:bg-surface transition-colors" style={{ marginTop: "1rem" }}>Back to Routes</Link>
       </div>
     );
   }
@@ -59,23 +59,23 @@ export default function TripDetailPage({ params }: { params: Promise<{ tripId: s
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginBottom: "1.5rem" }}>
-        <Link href={`/routes/${encodeURIComponent(trip.routeId)}`} className="btn btn-outline" style={{ padding: "0.25rem 0.75rem", fontSize: "0.8rem" }}>
+        <Link href={`/routes/${encodeURIComponent(trip.routeId)}`} className="inline-flex items-center px-3 py-1.5 rounded-md border border-border bg-white text-primary font-medium text-xs hover:bg-surface transition-colors">
           &larr; Back to Route
         </Link>
         <h1 style={{ fontSize: "1.5rem", fontWeight: 700 }}>Trip {trip.tripId}</h1>
       </div>
 
-      <div className="card" style={{ marginBottom: "1.5rem" }}>
+      <div className="bg-white rounded-lg shadow-sm border border-border p-4" style={{ marginBottom: "1.5rem" }}>
         <h2 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "1rem" }}>Trip Details</h2>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "1rem" }}>
           {[
-            ["Route", trip.routeShortName ?? "—"],
-            ["Route Name", trip.routeLongName ?? "—"],
+            ["Route", trip.routeShortName ?? "N/A"],
+            ["Route Name", trip.routeLongName ?? "N/A"],
             ["Service ID", trip.serviceId],
-            ["Headsign", trip.tripHeadsign ?? "—"],
+            ["Headsign", trip.tripHeadsign ?? "N/A"],
             ["Direction", formatDirection(trip.directionId)],
-            ["Block", trip.blockId ?? "—"],
-            ["Shape", trip.shapeId ?? "—"],
+            ["Block", trip.blockId ?? "N/A"],
+            ["Shape", trip.shapeId ?? "N/A"],
             ["Trip ID", trip.tripId],
           ].map(([label, value]) => (
             <div key={String(label)}>
@@ -86,39 +86,39 @@ export default function TripDetailPage({ params }: { params: Promise<{ tripId: s
         </div>
       </div>
 
-      <div className="card" style={{ padding: 0, overflowX: "auto" }}>
+      <div className="bg-white rounded-lg shadow-sm border border-border" style={{ overflowX: "auto" }}>
         <h2 style={{ fontSize: "1rem", fontWeight: 600, padding: "1rem 1rem 0.5rem" }}>
           Stops ({data.stopTimes.length.toLocaleString()})
         </h2>
-        <table>
-          <thead>
+        <table className="w-full border-collapse text-sm">
+          <thead className="bg-slate-100">
             <tr>
-              <th>#</th>
-              <th>Stop Name</th>
-              <th>Stop ID</th>
-              <th>Arrival</th>
-              <th>Departure</th>
-              <th>Pickup</th>
-              <th>Drop-off</th>
+              <th className="border border-slate-200 px-3 py-2 text-center font-semibold">#</th>
+              <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Stop Name</th>
+              <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Stop ID</th>
+              <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Arrival</th>
+              <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Departure</th>
+              <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Pickup</th>
+              <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Drop-off</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody className="divide-y divide-slate-200">
             {data.stopTimes.length === 0 && (
-              <tr><td colSpan={7} style={{ textAlign: "center", color: "#64748b", padding: "2rem" }}>No stop times found.</td></tr>
+              <tr><td colSpan={7} className="text-center text-muted px-3 py-8">No stop times found.</td></tr>
             )}
             {data.stopTimes.map(st => (
-              <tr key={st.stopId + "-" + st.stopSequence}>
-                <td style={{ fontFamily: "monospace", fontSize: "0.8rem", textAlign: "center" }}>{st.stopSequence}</td>
-                <td>
-                  <Link href={`/stops/${encodeURIComponent(st.stopId)}`} style={{ color: "#2563eb", textDecoration: "none" }}>
+              <tr key={st.stopId + "-" + st.stopSequence} className="hover:bg-slate-50">
+                <td className="px-3 py-2 font-mono text-xs text-center">{st.stopSequence}</td>
+                <td className="px-3 py-2">
+                  <Link href={`/stops/${encodeURIComponent(st.stopId)}`} className="text-accent hover:underline">
                     {st.stopName}
                   </Link>
                 </td>
-                <td style={{ fontFamily: "monospace", fontSize: "0.8rem" }}>{st.stopId}</td>
-                <td style={{ fontFamily: "monospace", fontSize: "0.8rem" }}>{st.arrivalTime ?? "—"}</td>
-                <td style={{ fontFamily: "monospace", fontSize: "0.8rem" }}>{st.departureTime ?? "—"}</td>
-                <td>{formatPickupType(st.pickupType)}</td>
-                <td>{formatDropOffType(st.dropOffType)}</td>
+                <td className="px-3 py-2 font-mono text-xs">{st.stopId}</td>
+                <td className="px-3 py-2 font-mono text-xs">{st.arrivalTime ?? "N/A"}</td>
+                <td className="px-3 py-2 font-mono text-xs">{st.departureTime ?? "N/A"}</td>
+                <td className="px-3 py-2">{formatPickupType(st.pickupType)}</td>
+                <td className="px-3 py-2">{formatDropOffType(st.dropOffType)}</td>
               </tr>
             ))}
           </tbody>

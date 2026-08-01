@@ -10,18 +10,18 @@ describe("formatDirection", () => {
     expect(formatDirection(1)).toBe("Inbound");
   });
 
-  it("returns em dash for null", () => {
-    expect(formatDirection(null)).toBe("—");
+  it("returns N/A for null", () => {
+    expect(formatDirection(null)).toBe("N/A");
   });
 
-  it("returns em dash for undefined", () => {
-    expect(formatDirection(undefined)).toBe("—");
+  it("returns N/A for undefined", () => {
+    expect(formatDirection(undefined)).toBe("N/A");
   });
 
-  it("returns em dash for other values (2, 99)", () => {
-    expect(formatDirection(2)).toBe("—");
-    expect(formatDirection(99)).toBe("—");
-    expect(formatDirection(-1)).toBe("—");
+  it("returns N/A for other values (2, 99)", () => {
+    expect(formatDirection(2)).toBe("N/A");
+    expect(formatDirection(99)).toBe("N/A");
+    expect(formatDirection(-1)).toBe("N/A");
   });
 });
 
@@ -42,18 +42,18 @@ describe("formatPickupType", () => {
     expect(formatPickupType(3)).toBe("Coordinate with driver");
   });
 
-  it("returns em dash for null", () => {
-    expect(formatPickupType(null)).toBe("—");
+  it("returns N/A for null", () => {
+    expect(formatPickupType(null)).toBe("N/A");
   });
 
-  it("returns em dash for undefined", () => {
-    expect(formatPickupType(undefined)).toBe("—");
+  it("returns N/A for undefined", () => {
+    expect(formatPickupType(undefined)).toBe("N/A");
   });
 
-  it("returns em dash for other values (4, 99)", () => {
-    expect(formatPickupType(4)).toBe("—");
-    expect(formatPickupType(99)).toBe("—");
-    expect(formatPickupType(-1)).toBe("—");
+  it("returns N/A for other values (4, 99)", () => {
+    expect(formatPickupType(4)).toBe("N/A");
+    expect(formatPickupType(99)).toBe("N/A");
+    expect(formatPickupType(-1)).toBe("N/A");
   });
 });
 

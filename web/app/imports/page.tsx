@@ -11,24 +11,24 @@ import type { ImportDto } from "@/types";
 function getDisplayStatus(imp: ImportDto): { label: string; className: string } {
     // Normal statuses
     if (imp.status === "failed") {
-        return { label: "failed", className: "status-badge status-failed" };
+        return { label: "failed", className: "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-danger/10 text-danger" };
     }
     if (imp.status === "pending") {
-        return { label: "pending", className: "status-badge status-active" };
+        return { label: "pending", className: "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-accent/10 text-accent" };
     }
     if (imp.status === "completed" && imp.isActive) {
-        return { label: "active", className: "status-badge status-completed" };
+        return { label: "active", className: "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-success/10 text-success" };
     }
 
     // Historical completed record with issues - show derived label
     if (imp.status === "completed" && !imp.isActive) {
         if (imp.errors > 0 || imp.acceptedRows === 0) {
-            return { label: "Completed with errors", className: "status-badge status-warning" };
+            return { label: "Completed with errors", className: "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-warning/10 text-warning" };
         }
-        return { label: "completed", className: "status-badge status-inactive" };
+        return { label: "completed", className: "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-muted/10 text-muted" };
     }
 
-    return { label: imp.status, className: "status-badge" };
+    return { label: imp.status, className: "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-surface text-muted" };
 }
 
 function getSourceName(sourceDirectory: string): string {
@@ -49,46 +49,46 @@ export default function ImportsPage() {
             .catch(() => setLoading(false));
     }, []);
 
-    const formatDate = (v: string | null) => v ? new Date(v).toLocaleString() : "—";
+    const formatDate = (v: string | null) => v ? new Date(v).toLocaleString() : "N/A";
 
     return (
         <div>
             <h1 style={{ fontSize: "1.5rem", fontWeight: 700, marginBottom: "1rem" }}>Import History</h1>
-            <div className="card" style={{ padding: 0, overflowX: "auto" }}>
-                <table>
-                    <thead>
+            <div className="bg-white rounded-lg shadow-sm border border-border overflow-x-auto">
+                <table className="w-full border-collapse text-sm">
+                    <thead className="bg-slate-100">
                         <tr>
-                            <th>ID</th>
-                            <th>Status</th>
-                            <th>Active</th>
-                            <th>Source</th>
-                            <th>Started</th>
-                            <th>Completed</th>
-                            <th>Processed</th>
-                            <th>Accepted</th>
-                            <th>Rejected</th>
-                            <th>Warnings</th>
-                            <th>Errors</th>
+                            <th className="border border-slate-200 px-3 py-2 text-left font-semibold">ID</th>
+                            <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Status</th>
+                            <th className="border border-slate-200 px-3 py-2 text-center font-semibold">Active</th>
+                            <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Source</th>
+                            <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Started</th>
+                            <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Completed</th>
+                            <th className="border border-slate-200 px-3 py-2 text-right font-semibold">Processed</th>
+                            <th className="border border-slate-200 px-3 py-2 text-right font-semibold">Accepted</th>
+                            <th className="border border-slate-200 px-3 py-2 text-right font-semibold">Rejected</th>
+                            <th className="border border-slate-200 px-3 py-2 text-right font-semibold">Warnings</th>
+                            <th className="border border-slate-200 px-3 py-2 text-right font-semibold">Errors</th>
                         </tr>
                     </thead>
-                    <tbody>
-                        {loading && <tr><td colSpan={11} style={{ textAlign: "center", color: "#64748b", padding: "2rem" }}>Loading...</td></tr>}
-                        {!loading && imports.length === 0 && <tr><td colSpan={11} style={{ textAlign: "center", color: "#64748b", padding: "2rem" }}>No imports yet.</td></tr>}
+                    <tbody className="divide-y divide-slate-200">
+                        {loading && <tr><td colSpan={11} className="text-center text-muted px-3 py-8">Loading...</td></tr>}
+                        {!loading && imports.length === 0 && <tr><td colSpan={11} className="text-center text-muted px-3 py-8">No imports yet.</td></tr>}
                         {imports.map(imp => {
                             const display = getDisplayStatus(imp);
                             return (
-                                <tr key={imp.id}>
-                                    <td style={{ fontFamily: "monospace", fontSize: "0.8rem" }}>{imp.id}</td>
-                                    <td><span className={display.className}>{display.label}</span></td>
-                                    <td style={{ textAlign: "center" }}>{imp.isActive ? "✓" : ""}</td>
-                                    <td style={{ fontFamily: "monospace", fontSize: "0.8rem", maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={imp.sourceDirectory}>{getSourceName(imp.sourceDirectory)}</td>
-                                    <td style={{ fontSize: "0.8rem", color: "#64748b" }}>{formatDate(imp.startedAt)}</td>
-                                    <td style={{ fontSize: "0.8rem", color: "#64748b" }}>{formatDate(imp.completedAt)}</td>
-                                    <td style={{ textAlign: "right" }}>{imp.processedRows.toLocaleString()}</td>
-                                    <td style={{ textAlign: "right", color: "#16a34a" }}>{imp.acceptedRows.toLocaleString()}</td>
-                                    <td style={{ textAlign: "right", color: imp.rejectedRows > 0 ? "#dc2626" : "inherit" }}>{imp.rejectedRows.toLocaleString()}</td>
-                                    <td style={{ textAlign: "right", color: imp.warnings > 0 ? "#d97706" : "inherit" }}>{imp.warnings.toLocaleString()}</td>
-                                    <td style={{ textAlign: "right", color: imp.errors > 0 ? "#dc2626" : "inherit" }}>{imp.errors.toLocaleString()}</td>
+                                <tr key={imp.id} className="hover:bg-slate-50">
+                                    <td className="px-3 py-2 font-mono text-xs">{imp.id}</td>
+                                    <td className="px-3 py-2"><span className={display.className}>{display.label}</span></td>
+                                    <td className="px-3 py-2 text-center">{imp.isActive ? "Yes" : "No"}</td>
+                                    <td className="px-3 py-2 font-mono text-xs max-w-[200px] truncate" title={imp.sourceDirectory}>{getSourceName(imp.sourceDirectory)}</td>
+                                    <td className="px-3 py-2 text-xs text-muted">{formatDate(imp.startedAt)}</td>
+                                    <td className="px-3 py-2 text-xs text-muted">{formatDate(imp.completedAt)}</td>
+                                    <td className="px-3 py-2 text-right">{imp.processedRows.toLocaleString()}</td>
+                                    <td className="px-3 py-2 text-right text-success">{imp.acceptedRows.toLocaleString()}</td>
+                                    <td className="px-3 py-2 text-right" style={{ color: imp.rejectedRows > 0 ? "#dc2626" : "inherit" }}>{imp.rejectedRows.toLocaleString()}</td>
+                                    <td className="px-3 py-2 text-right" style={{ color: imp.warnings > 0 ? "#d97706" : "inherit" }}>{imp.warnings.toLocaleString()}</td>
+                                    <td className="px-3 py-2 text-right" style={{ color: imp.errors > 0 ? "#dc2626" : "inherit" }}>{imp.errors.toLocaleString()}</td>
                                 </tr>
                             );
                         })}

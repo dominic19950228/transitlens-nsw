@@ -62,13 +62,13 @@ export default async function DashboardPage() {
     <div>
       <h1 style={{ fontSize: "1.5rem", fontWeight: 700, marginBottom: "0.25rem" }}>Dashboard</h1>
       <p style={{ color: "#64748b", marginBottom: "2rem" }}>
-        Feed #{feed.id} &middot; Imported {feed.completed_at ? new Date(feed.completed_at).toLocaleDateString() : "—"}
+        Feed #{feed.id} &middot; Imported {feed.completed_at ? new Date(feed.completed_at).toLocaleDateString() : "N/A"}
       </p>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "1rem", marginBottom: "2rem" }}>
         {cards.map(c => (
           <Link key={c.label} href={c.href} style={{ textDecoration: "none" }}>
-            <div className="card" style={{ cursor: "pointer" }}>
+            <div className="bg-white rounded-lg shadow-sm border border-border p-4" style={{ cursor: "pointer" }}>
               <div style={{ fontSize: "0.75rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "#64748b", marginBottom: "0.5rem" }}>
                 {c.label}
               </div>
@@ -81,9 +81,9 @@ export default async function DashboardPage() {
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "1rem" }}>
-        <Link href="/routes" className="btn btn-primary" style={{ justifyContent: "center" }}>Browse Routes</Link>
-        <Link href="/stops" className="btn btn-outline" style={{ justifyContent: "center" }}>Browse Stops</Link>
-        <Link href="/imports" className="btn btn-outline" style={{ justifyContent: "center" }}>Import History</Link>
+        <Link href="/routes" className="inline-flex items-center px-4 py-2 rounded-md bg-accent text-white font-medium text-sm hover:bg-accent-hover transition-colors" style={{ justifyContent: "center" }}>Browse Routes</Link>
+        <Link href="/stops" className="inline-flex items-center px-4 py-2 rounded-md border border-border bg-white text-primary font-medium text-sm hover:bg-surface transition-colors" style={{ justifyContent: "center" }}>Browse Stops</Link>
+        <Link href="/imports" className="inline-flex items-center px-4 py-2 rounded-md border border-border bg-white text-primary font-medium text-sm hover:bg-surface transition-colors" style={{ justifyContent: "center" }}>Import History</Link>
       </div>
     </div>
   );

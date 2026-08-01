@@ -46,39 +46,47 @@ export default function RoutesPage() {
           style={{ padding: "0.5rem 0.75rem", border: "1px solid #e2e8f0", borderRadius: "0.375rem", width: "100%", maxWidth: "400px", fontSize: "0.875rem" }}
         />
       </div>
-      <div className="card" style={{ padding: 0, overflowX: "auto" }}>
-        <table>
-          <thead>
+      <div className="bg-white rounded-lg shadow-sm border border-border overflow-x-auto">
+        <table className="w-full border-collapse text-sm">
+          <thead className="bg-slate-100">
             <tr>
-              <th>Short Name</th><th>Long Name</th><th>Type</th><th>Agency</th><th></th>
+              <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Short Name</th>
+              <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Long Name</th>
+              <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Type</th>
+              <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Agency</th>
+              <th className="border border-slate-200 px-3 py-2 text-right font-semibold"></th>
             </tr>
           </thead>
-          <tbody>
+          <tbody className="divide-y divide-slate-200">
             {!loading && data?.data.length === 0 && (
-              <tr><td colSpan={5} style={{ textAlign: "center", color: "#64748b", padding: "2rem" }}>No routes found.</td></tr>
+              <tr><td colSpan={5} className="text-center text-muted px-3 py-8">No routes found.</td></tr>
             )}
             {data?.data.map(r => (
-              <tr key={r.routeId}>
-                <td style={{ fontWeight: 600 }}>{r.routeShortName ?? "—"}</td>
-                <td>{r.routeLongName ?? "—"}</td>
-                <td>{routeTypeName(r.routeType)}</td>
-                <td style={{ color: "#64748b", fontSize: "0.8rem" }}>{r.agencyId ?? "—"}</td>
-                <td style={{ textAlign: "right" }}>
-                  <Link href={`/routes/${r.routeId}`} className="btn btn-outline" style={{ padding: "0.25rem 0.75rem", fontSize: "0.8rem" }}>View</Link>
+              <tr key={r.routeId} className="hover:bg-slate-50">
+                <td className="px-3 py-2 font-semibold">{r.routeShortName ?? "N/A"}</td>
+                <td className="px-3 py-2">{r.routeLongName ?? "N/A"}</td>
+                <td className="px-3 py-2">{routeTypeName(r.routeType)}</td>
+                <td className="px-3 py-2 text-muted text-xs">{r.agencyId ?? "N/A"}</td>
+                <td className="px-3 py-2 text-right">
+                  <Link href={`/routes/${r.routeId}`} className="inline-flex items-center px-3 py-1.5 rounded-md border border-border bg-white text-primary font-medium text-xs hover:bg-surface transition-colors">View</Link>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
-        {loading && <div style={{ textAlign: "center", padding: "2rem", color: "#64748b" }}>Loading...</div>}
+        {loading && <div className="text-center text-muted px-3 py-8">Loading...</div>}
       </div>
       {data && (
-        <div className="pagination">
-          <span className="pagination-info">
-            {data.offset + 1}–{Math.min(data.offset + data.data.length, data.total)} of {data.total}
+        <div className="flex items-center justify-between mt-4 text-sm text-muted">
+          <span>
+            {data.offset + 1} -{" "}
+            {Math.min(data.offset + data.data.length, data.total)} of{" "}
+            {data.total}
           </span>
-          <button className="btn btn-outline" disabled={data.offset === 0} onClick={() => handlePage(data.offset - 20)} style={{ padding: "0.25rem 0.75rem", fontSize: "0.8rem" }}>Previous</button>
-          <button className="btn btn-outline" disabled={data.offset + data.data.length >= data.total} onClick={() => handlePage(data.offset + 20)} style={{ padding: "0.25rem 0.75rem", fontSize: "0.8rem" }}>Next</button>
+          <div className="flex gap-2">
+            <button className="inline-flex items-center px-3 py-1.5 rounded-md border border-border bg-white text-primary font-medium text-xs hover:bg-surface transition-colors disabled:opacity-50 disabled:cursor-not-allowed" disabled={data.offset === 0} onClick={() => handlePage(data.offset - 20)}>Previous</button>
+            <button className="inline-flex items-center px-3 py-1.5 rounded-md border border-border bg-white text-primary font-medium text-xs hover:bg-surface transition-colors disabled:opacity-50 disabled:cursor-not-allowed" disabled={data.offset + data.data.length >= data.total} onClick={() => handlePage(data.offset + 20)}>Next</button>
+          </div>
         </div>
       )}
     </div>

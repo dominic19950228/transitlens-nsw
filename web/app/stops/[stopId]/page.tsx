@@ -31,7 +31,7 @@ export default function StopDetailPage({ params }: { params: Promise<{ stopId: s
           {error.error === "NO_ACTIVE_FEED" ? "No Active Feed" : "Not Found"}
         </h2>
         <p style={{ color: "#64748b" }}>{error.message}</p>
-        <Link href="/stops" className="btn btn-outline" style={{ marginTop: "1rem" }}>Back to Stops</Link>
+        <Link href="/stops" className="inline-flex items-center px-4 py-2 rounded-md border border-border bg-white text-primary font-medium text-sm hover:bg-surface transition-colors" style={{ marginTop: "1rem" }}>Back to Stops</Link>
       </div>
     );
   }
@@ -43,21 +43,21 @@ export default function StopDetailPage({ params }: { params: Promise<{ stopId: s
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginBottom: "1.5rem" }}>
-        <Link href="/stops" className="btn btn-outline" style={{ padding: "0.25rem 0.75rem", fontSize: "0.8rem" }}>&larr; Back</Link>
+        <Link href="/stops" className="inline-flex items-center px-3 py-1.5 rounded-md border border-border bg-white text-primary font-medium text-xs hover:bg-surface transition-colors">&larr; Back</Link>
         <h1 style={{ fontSize: "1.5rem", fontWeight: 700 }}>{stop.stopName}</h1>
       </div>
 
-      <div className="card" style={{ marginBottom: "1.5rem" }}>
+      <div className="bg-white rounded-lg shadow-sm border border-border p-4" style={{ marginBottom: "1.5rem" }}>
         <h2 style={{ fontSize: "1rem", fontWeight: 600, marginBottom: "1rem" }}>Stop Details</h2>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "1rem" }}>
           {[
             ["Stop ID", stop.stopId],
             ["Name", stop.stopName],
-            ["Latitude", stop.stopLat?.toFixed(6) ?? "—"],
-            ["Longitude", stop.stopLon?.toFixed(6) ?? "—"],
-            ["Location Type", stop.locationType === 0 ? "Stop" : stop.locationType === 1 ? "Station" : stop.locationType === 2 ? "Entrance" : stop.locationType != null ? `Type ${stop.locationType}` : "—"],
-            ["Parent Station", stop.parentStation ?? "—"],
-            ["Wheelchair", stop.wheelchairBoarding === 0 ? "No info" : stop.wheelchairBoarding === 1 ? "Accessible" : stop.wheelchairBoarding === 2 ? "Not accessible" : "—"],
+            ["Latitude", stop.stopLat?.toFixed(6) ?? "N/A"],
+            ["Longitude", stop.stopLon?.toFixed(6) ?? "N/A"],
+            ["Location Type", stop.locationType === 0 ? "Stop" : stop.locationType === 1 ? "Station" : stop.locationType === 2 ? "Entrance" : stop.locationType != null ? `Type ${stop.locationType}` : "N/A"],
+            ["Parent Station", stop.parentStation ?? "N/A"],
+            ["Wheelchair", stop.wheelchairBoarding === 0 ? "No info" : stop.wheelchairBoarding === 1 ? "Accessible" : stop.wheelchairBoarding === 2 ? "Not accessible" : "N/A"],
           ].map(([label, value]) => (
             <div key={String(label)}>
               <div style={{ fontSize: "0.75rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", color: "#64748b", marginBottom: "0.25rem" }}>{label}</div>
@@ -67,28 +67,33 @@ export default function StopDetailPage({ params }: { params: Promise<{ stopId: s
         </div>
       </div>
 
-      <div className="card" style={{ padding: 0, overflowX: "auto" }}>
+      <div className="bg-white rounded-lg shadow-sm border border-border" style={{ overflowX: "auto" }}>
         <h2 style={{ fontSize: "1rem", fontWeight: 600, padding: "1rem 1rem 0.5rem" }}>
           Stop Times ({stopTimes.length.toLocaleString()})
         </h2>
-        <table>
-          <thead>
+        <table className="w-full border-collapse text-sm">
+          <thead className="bg-slate-100">
             <tr>
-              <th>Trip</th><th>Route</th><th>Headsign</th><th>Arrival</th><th>Departure</th><th>Seq</th>
+              <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Trip</th>
+              <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Route</th>
+              <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Headsign</th>
+              <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Arrival</th>
+              <th className="border border-slate-200 px-3 py-2 text-left font-semibold">Departure</th>
+              <th className="border border-slate-200 px-3 py-2 text-center font-semibold">Seq</th>
             </tr>
           </thead>
-          <tbody>
+          <tbody className="divide-y divide-slate-200">
             {stopTimes.length === 0 && (
-              <tr><td colSpan={6} style={{ textAlign: "center", color: "#64748b", padding: "2rem" }}>No stop times found.</td></tr>
+              <tr><td colSpan={6} className="text-center text-muted px-3 py-8">No stop times found.</td></tr>
             )}
             {stopTimes.map((t, i) => (
-              <tr key={`${t.tripId}-${t.stopSequence}-${i}`}>
-                <td style={{ fontFamily: "monospace", fontSize: "0.8rem" }}>{t.tripId}</td>
-                <td style={{ fontFamily: "monospace", fontSize: "0.8rem" }}>{t.routeId}</td>
-                <td>{t.tripHeadsign ?? "—"}</td>
-                <td style={{ fontFamily: "monospace", fontSize: "0.8rem" }}>{t.arrivalTime ?? "—"}</td>
-                <td style={{ fontFamily: "monospace", fontSize: "0.8rem" }}>{t.departureTime ?? "—"}</td>
-                <td style={{ textAlign: "center" }}>{t.stopSequence}</td>
+              <tr key={`${t.tripId}-${t.stopSequence}-${i}`} className="hover:bg-slate-50">
+                <td className="px-3 py-2 font-mono text-xs">{t.tripId}</td>
+                <td className="px-3 py-2 font-mono text-xs">{t.routeId}</td>
+                <td className="px-3 py-2">{t.tripHeadsign ?? "N/A"}</td>
+                <td className="px-3 py-2 font-mono text-xs">{t.arrivalTime ?? "N/A"}</td>
+                <td className="px-3 py-2 font-mono text-xs">{t.departureTime ?? "N/A"}</td>
+                <td className="px-3 py-2 text-center">{t.stopSequence}</td>
               </tr>
             ))}
           </tbody>
