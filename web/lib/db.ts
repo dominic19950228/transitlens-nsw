@@ -7,6 +7,15 @@ import "server-only";
 
 import mysql from "mysql2/promise";
 
+export class NoActiveFeedError extends Error {
+  readonly statusCode = 503;
+  readonly errorCode = "NO_ACTIVE_FEED";
+
+  constructor() {
+    super("No active GTFS feed is available.");
+    this.name = "NoActiveFeedError";
+  }
+}
 function getConfig() {
   const host = process.env.DB_HOST;
   const port = process.env.DB_PORT;
@@ -91,10 +100,7 @@ export async function resolveActiveFeedId(): Promise<number | null> {
 export async function requireActiveFeedId(): Promise<number> {
   const id = await resolveActiveFeedId();
   if (id === null) {
-    const err = new Error("No active GTFS feed is available.");
-    (err as any).statusCode = 503;
-    (err as any).errorCode = "NO_ACTIVE_FEED";
-    throw err;
+    throw new NoActiveFeedError();
   }
   return id;
 }
