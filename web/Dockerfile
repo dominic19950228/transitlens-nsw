@@ -15,7 +15,6 @@ COPY app ./app
 COPY components ./components
 COPY lib ./lib
 COPY types ./types
-COPY next-env.d.ts ./next-env.d.ts
 
 RUN npm run build
 
