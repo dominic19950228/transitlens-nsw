@@ -38,4 +38,6 @@ coverage/
 
 web/.next
 *.tsbuildinfo
-web\next-env.d.ts
+web/next-env.d.ts
+data/sample-feed/
+tests/fixtures/gtfs/minimal-valid/
