@@ -390,22 +390,22 @@ describe("Database migrations", () => {
     it("should execute allowlisted migration file 20260728-fix-id-collations.sql", async () => {
         const { REQUIRED_TABLES } = await import("../src/database/migrations.js");
         
-        // Override readdirSync to return the allowlisted file
-        const mockReaddirSync = vi.fn().mockReturnValue(["20260728-fix-id-collations.sql"]);
-        vi.doMock("node:fs", () => ({
-            existsSync: vi.fn().mockReturnValue(true),
-            readFileSync: mockReadFileSync,
-            readdirSync: mockReaddirSync,
-        }));
+        mockReaddirSync.mockReturnValue(["20260728-fix-id-collations.sql"]);
         const { runMigrations: runMigrations2 } = await import("../src/database/migrations.js");
         
         mockReadFileSync
             .mockReturnValueOnce("SELECT 1;")                     // schema.sql
             .mockReturnValueOnce("SELECT 1;");                    // 20260728-fix-id-collations.sql
         
-        mockPool.query.mockResolvedValue([REQUIRED_TABLES.map(t => ({ TABLE_NAME: t }))]);
-        mockPool.query.mockResolvedValue([[{ DEFAULT_CHARACTER_SET_NAME: "utf8mb4", DEFAULT_COLLATION_NAME: "utf8mb4_unicode_ci" }]]);
-        mockPool.query.mockResolvedValue([[{ version: "10.4.11" }]]);
+        mockPool.query
+            .mockResolvedValueOnce([REQUIRED_TABLES.map(t => ({ TABLE_NAME: t }))])
+            .mockResolvedValueOnce([[
+                {
+                    DEFAULT_CHARACTER_SET_NAME: "utf8mb4",
+                    DEFAULT_COLLATION_NAME: "utf8mb4_unicode_ci",
+                },
+            ]])
+            .mockResolvedValueOnce([[{ version: "10.4.11" }]]);
         
         mockConnection.query.mockReset();
         mockConnection.query
@@ -428,13 +428,7 @@ describe("Database migrations", () => {
     it("should reject runMigrations when a migration SQL statement fails", async () => {
         const { REQUIRED_TABLES } = await import("../src/database/migrations.js");
         
-        // Override readdirSync to return the allowlisted file
-        const mockReaddirSync = vi.fn().mockReturnValue(["20260728-fix-id-collations.sql"]);
-        vi.doMock("node:fs", () => ({
-            existsSync: vi.fn().mockReturnValue(true),
-            readFileSync: mockReadFileSync,
-            readdirSync: mockReaddirSync,
-        }));
+        mockReaddirSync.mockReturnValue(["20260728-fix-id-collations.sql"]);
         const { runMigrations: runMigrations2 } = await import("../src/database/migrations.js");
         
         mockReadFileSync
