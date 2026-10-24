@@ -29,6 +29,10 @@ npm-debug.log*
 *.swp
 *.swo
 
+# Local AI tooling configuration
+.opencode/
+.continue/
+
 # OS
 .DS_Store
 Thumbs.db
