@@ -6,6 +6,7 @@
 import "server-only";
 
 import mysql from "mysql2/promise";
+import { parseDbEnv } from "./env";
 
 export class NoActiveFeedError extends Error {
   readonly statusCode = 503;
@@ -17,26 +18,8 @@ export class NoActiveFeedError extends Error {
   }
 }
 function getConfig() {
-  const host = process.env.DB_HOST;
-  const port = process.env.DB_PORT;
-  const user = process.env.DB_USER;
-  const password = process.env.DB_PASSWORD ?? "";
-  const database = process.env.DB_NAME;
-  const connectionLimit = process.env.DB_CONNECTION_LIMIT;
-
-  if (!host) throw new Error("DB_HOST must be set");
-  if (!port) throw new Error("DB_PORT must be set");
-  if (!user) throw new Error("DB_USER must be set");
-  if (!database) throw new Error("DB_NAME must be set");
-
-  return {
-    host,
-    port: Number(port),
-    user,
-    password,
-    database,
-    connectionLimit: connectionLimit ? Number(connectionLimit) : 5,
-  };
+  // Zod-validated and typed; throws a single descriptive error when invalid.
+  return parseDbEnv();
 }
 
 let pool: mysql.Pool | null = null;

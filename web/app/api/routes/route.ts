@@ -1,11 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import mysql from "mysql2/promise";
 import { query, requireActiveFeedId } from "@/lib/db";
+import { formatQueryIssues, parsePaginationQuery } from "@/lib/queryParams";
 
 export const dynamic = "force-dynamic";
-
-const DEFAULT_LIMIT = 50;
-const MAX_LIMIT = 200;
 
 interface RouteRow extends mysql.RowDataPacket {
   route_id: string;
@@ -15,12 +13,24 @@ interface RouteRow extends mysql.RowDataPacket {
   route_type: number;
 }
 
-function parseIntSafe(val: unknown, fallback: number): number {
-  const n = Number(val);
-  return Number.isInteger(n) && n > 0 ? n : fallback;
-}
-
 export async function GET(request: NextRequest) {
+  const { searchParams } = new URL(request.url);
+  const parsedQuery = parsePaginationQuery(searchParams);
+
+  if (!parsedQuery.success) {
+    return NextResponse.json(
+      {
+        error: "INVALID_QUERY",
+        message: "Invalid query parameters.",
+        details: formatQueryIssues(parsedQuery.error),
+      },
+      { status: 400 }
+    );
+  }
+
+  const { search, limit, offset } = parsedQuery.data;
+  const searchPattern = `%${search}%`;
+
   let activeFeedId: number;
   try {
     activeFeedId = await requireActiveFeedId();
@@ -33,13 +43,6 @@ export async function GET(request: NextRequest) {
     }
     throw err;
   }
-
-  const { searchParams } = new URL(request.url);
-  const search = searchParams.get("search") ?? "";
-  const limit = Math.min(parseIntSafe(searchParams.get("limit"), DEFAULT_LIMIT), MAX_LIMIT);
-  const offset = parseIntSafe(searchParams.get("offset"), 0);
-
-  const searchPattern = `%${search}%`;
 
   const [rows, countRows] = await Promise.all([
     query<RouteRow[]>(

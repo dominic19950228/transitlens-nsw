@@ -15,6 +15,7 @@ TransitLens NSW downloads the TfNSW Complete GTFS feed, securely extracts and va
 - Preserves the previously active feed when a new import fails
 - Stores case-sensitive GTFS identifiers safely
 - Provides route, trip, stop, health, and import-history APIs
+- Validates API query parameters and database configuration with Zod schemas
 - Includes a responsive React, Next.js, and Tailwind CSS frontend
 - Includes automated tests for downloader, extraction, validation, database, and formatting logic
 
@@ -109,7 +110,6 @@ A successful feed import is stored under a versioned import ID. A new feed becom
 - MariaDB / MySQL
 - `mysql2`
 - `unzipper`
-- Zod
 - SHA-256 hashing
 - Vitest
 
@@ -119,6 +119,7 @@ A successful feed import is stored under a versioned import ID. A new feed becom
 - Next.js 16 App Router
 - TypeScript
 - Tailwind CSS v4
+- Zod request and environment validation
 - Server-only MariaDB queries
 
 ## High-Level Project Structure
@@ -514,6 +515,24 @@ The web application requires the database to be running with a completed active 
 | `/api/stops` | GET | Paginated stops using `search`, `limit`, and `offset` |
 | `/api/stops/[stopId]` | GET | Stop details with stop times |
 
+Paginated endpoints validate `search`, `limit`, and `offset` with a shared Zod schema before any database work:
+
+- `limit` must be an integer between 1 and 200 (default 50)
+- `offset` must be an integer of 0 or greater (default 0)
+- `search` is trimmed and limited to 200 characters
+
+Invalid values return `400` with field-level details:
+
+```json
+{
+  "error": "INVALID_QUERY",
+  "message": "Invalid query parameters.",
+  "details": [
+    { "field": "limit", "message": "Too big: expected number to be <=200" }
+  ]
+}
+```
+
 ## Testing
 
 Tests do not call the production TfNSW API.
@@ -547,6 +566,7 @@ Coverage includes:
 - transactional import behavior
 - failed import diagnostics
 - case-sensitive GTFS identifiers
+- API query validation and database environment validation
 - frontend formatting helpers
 
 ## Engineering Decisions
@@ -570,6 +590,10 @@ The real TfNSW dataset contains identifiers that differ only by letter casing. R
 ### Defensive archive handling
 
 ZIP entry names are normalised and validated before any file is written. Unsafe paths, symbolic links, duplicate targets, and configured resource-limit violations are rejected.
+
+### Typed request and configuration validation
+
+API pagination parameters and database environment variables are parsed with Zod schemas in `web/lib/queryParams.ts` and `web/lib/env.ts`. Query validation runs before any database access, so a malformed request fails fast with a `400` and field-level details instead of reaching MariaDB. Environment validation stays lazy, so production builds never require database credentials, while a misconfigured deployment fails with one descriptive error.
 
 ### Safe diagnostics
 
